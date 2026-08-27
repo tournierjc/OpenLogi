@@ -961,6 +961,7 @@ fn profile_options_popover(profile: ProfileChoice, pal: Palette) -> impl IntoEle
 }
 
 fn open_remove_confirmation(window: &mut Window, cx: &mut App, profile: &ProfileChoice) {
+    let app = profile.app.clone();
     let question = match profile.override_count {
         1 => tr!(
             "Remove %{app} profile and its 1 override?",
@@ -985,11 +986,14 @@ fn open_remove_confirmation(window: &mut Window, cx: &mut App, profile: &Profile
                     .cancel_text(tr!("Cancel"))
                     .show_cancel(true),
             )
-            .on_ok(move |_event, _window, cx| {
-                AppState::update_bindings(cx, |state| {
-                    state.remove_editing_app_profile();
-                });
-                true
+            .on_ok({
+                let app = app.clone();
+                move |_event, _window, cx| {
+                    AppState::update_bindings(cx, |state| {
+                        state.remove_app_profile(&app);
+                    });
+                    true
+                }
             })
     });
 }
