@@ -277,7 +277,9 @@ impl ActionDispatcher {
         button: ButtonId,
         binding: Option<&Binding>,
     ) -> Option<PressToken> {
-        self.buttons.try_hook_down(button, binding)
+        self.buttons.try_hook_down(button, binding).inspect(|_| {
+            crate::lighting::notify_press();
+        })
     }
 
     /// Queue one OS-hook up edge without blocking the callback.
@@ -287,7 +289,11 @@ impl ActionDispatcher {
 
     /// Queue one function-key down edge without blocking the hook callback.
     pub(crate) fn try_hook_key_down(&self, keycode: u16, action: &Action) -> bool {
-        self.buttons.try_hook_key_down(keycode, action).is_some()
+        let accepted = self.buttons.try_hook_key_down(keycode, action).is_some();
+        if accepted {
+            crate::lighting::notify_press();
+        }
+        accepted
     }
 
     /// Queue one function-key up edge without blocking the hook callback.
@@ -320,7 +326,11 @@ impl ActionDispatcher {
         button: ButtonId,
         binding: Option<&Binding>,
     ) -> Option<PressToken> {
-        self.buttons.try_hidpp_down(session, button, binding)
+        self.buttons
+            .try_hidpp_down(session, button, binding)
+            .inspect(|_| {
+                crate::lighting::notify_press();
+            })
     }
 
     /// Queue one HID++ up edge for a specific capture session.
@@ -337,6 +347,7 @@ impl ActionDispatcher {
         binding: Option<&Binding>,
     ) {
         self.buttons.try_hidpp_pulse(session, button, binding);
+        crate::lighting::notify_press();
     }
 
     /// Cancel presses from a HID++ session that is stopping or has died.
