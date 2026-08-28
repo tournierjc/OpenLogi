@@ -26,7 +26,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::state::AppState;
+use crate::state::{AppState, DeviceKey, StateEvent};
 use crate::ui::components::{MenuRow, control_button, control_input};
 use crate::ui::theme::{self, Palette, SelectableStyle as _, Typography as _};
 
@@ -997,21 +997,22 @@ fn open_remove_confirmation(window: &mut Window, cx: &mut App, profile: &Profile
             .on_ok({
                 let app = app.clone();
                 let device_key = device_key.clone();
-                move |_event, window, cx| {
-                    let app = app.clone();
-                    let device_key = device_key.clone();
-                    // Defer past dialog teardown and pin the device key now —
-                    // `current_record()` is not reliable inside the confirm
-                    // callback (same class of issue as opening this alert from
-                    // the ellipsis menu).
-                    window.defer(cx, move |_window, cx| {
-                        AppState::update_bindings(cx, |state| {
-                            state.remove_app_profile_for_device(&device_key, &app);
-                        });
-                    });
+                move |_event, _window, cx| {
+                    commit_remove_profile(&device_key, &app, cx);
                     true
                 }
             })
+    });
+}
+
+/// Drop one persisted profile and repaint binding chrome. Runs synchronously
+/// when the confirm alert's OK button fires — deferring past dialog teardown
+/// dropped the delete and left the tab selected.
+fn commit_remove_profile(device_key: &str, app: &str, cx: &mut App) {
+    let event_key = DeviceKey::from(device_key);
+    AppState::update(cx, |state, cx| {
+        state.remove_app_profile_for_device(device_key, app);
+        cx.emit(StateEvent::BindingsChanged(event_key));
     });
 }
 
@@ -1052,10 +1053,13 @@ mod tests {
     use gpui_component::popover::Popover;
 
     use super::{
-        APP_ROW_H, MenuRow, ProfileChoice, compact_panel, friendly_app_name,
+        APP_ROW_H, MenuRow, ProfileChoice, commit_remove_profile, compact_panel, friendly_app_name,
         identity_for_application, open_remove_confirmation,
     };
+    use crate::state::AppState;
+    use crate::state::tests::state_with_a_known_mouse;
     use crate::ui::theme;
+    use openlogi_core::binding::{Action, ButtonId};
 
     #[test]
     fn profile_identifiers_have_a_readable_fallback() {
@@ -1213,9 +1217,6 @@ mod tests {
         );
     }
 
-    use crate::state::AppState;
-    use crate::state::tests::state_with_a_known_mouse;
-
     /// Dropdown → deferred confirm, matching production's `window.defer` path.
     struct RemoveConfirmHarness;
 
@@ -1278,5 +1279,33 @@ mod tests {
             cx.update(WindowExt::has_active_dialog),
             "Remove must open a confirm alert after the menu dismisses"
         );
+    }
+
+    #[gpui::test]
+    fn confirming_remove_deletes_the_profile(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            let mut state = state_with_a_known_mouse();
+            state.set_editing_app(Some("com.apple.Safari".into()));
+            state.commit_binding(ButtonId::Back, Action::Undo);
+            AppState::set_global(cx.new(|_| state), cx);
+        });
+
+        cx.update(|cx| {
+            commit_remove_profile(crate::state::tests::KNOWN_MOUSE_KEY, "com.apple.Safari", cx);
+        });
+
+        cx.read(|cx| {
+            let state = AppState::try_read(cx).expect("shared state");
+            assert_eq!(
+                state.editing_app(),
+                None,
+                "confirming Remove must fall back to Default"
+            );
+            assert!(
+                state.app_profiles().next().is_none(),
+                "the profile tab must disappear from the bar"
+            );
+        });
     }
 }
