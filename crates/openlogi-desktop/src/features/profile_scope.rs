@@ -19,6 +19,7 @@ use gpui_component::{
     dialog::DialogButtonProps,
     h_flex,
     input::{InputEvent, InputState},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     popover::{Popover, PopoverState},
     scroll::ScrollableElement as _,
     spinner::Spinner,
@@ -527,7 +528,7 @@ fn profile_scope_content(
         .child(add_app_popover(choices, catalog, icons, pal))
         .when_some(
             selected_profile.filter(|profile| profile.persisted),
-            |row, profile| row.child(profile_options_popover(profile, pal)),
+            |row, profile| row.child(profile_options_button(profile)),
         )
 }
 
@@ -922,42 +923,33 @@ fn application_list_height(rows: usize) -> f32 {
     }
 }
 
-fn profile_options_popover(profile: ProfileChoice, pal: Palette) -> impl IntoElement {
-    Popover::new("profile-options-popover")
-        .anchor(Anchor::TopRight)
-        // `compact_panel` is the surface here too; see `add_app_popover`.
-        .appearance(false)
-        .trigger(
-            Button::new("profile-options")
-                .ghost()
-                .xsmall()
-                .icon(IconName::Ellipsis),
+/// Same ellipsis → confirm path as forgetting a device: a `dropdown_menu`,
+/// not a custom overlay-closable popover. Opening an alert from inside that
+/// popover dismisses the overlay on the same click and the dialog never
+/// stays open — Remove looks like a no-op.
+fn profile_options_button(profile: ProfileChoice) -> impl IntoElement {
+    Button::new("profile-options")
+        .ghost()
+        .xsmall()
+        .icon(IconName::Ellipsis)
+        .dropdown_menu_with_anchor(Anchor::TopRight, profile_options_menu(profile))
+}
+
+fn profile_options_menu(
+    profile: ProfileChoice,
+) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+    move |menu, _window, _cx| {
+        menu.item(
+            PopupMenuItem::new(tr!("Remove profile…"))
+                .icon(IconName::Delete)
+                .on_click({
+                    let profile = profile.clone();
+                    move |_, window, cx| {
+                        open_remove_confirmation(window, cx, &profile);
+                    }
+                }),
         )
-        .content(move |_state, _window, cx| {
-            let popover = cx.entity().downgrade();
-            let profile = profile.clone();
-            compact_panel(pal)
-                .w(px(224.))
-                .child(title(tr!("Profile options"), pal))
-                .child(divider(pal))
-                .child(
-                    MenuRow::new("remove-profile")
-                        .role(Role::MenuItem)
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .gap_2()
-                                .child(Icon::new(IconName::Close).size_4())
-                                .child(tr!("Remove profile…")),
-                        )
-                        .on_click(move |_event, window, cx| {
-                            if let Some(popover) = popover.upgrade() {
-                                popover.update(cx, |state, cx| state.dismiss(window, cx));
-                            }
-                            open_remove_confirmation(window, cx, &profile);
-                        }),
-                )
-        })
+    }
 }
 
 fn open_remove_confirmation(window: &mut Window, cx: &mut App, profile: &ProfileChoice) {
@@ -1024,14 +1016,20 @@ mod tests {
 
     use appcatalog::{Application, ApplicationIdentity, IdentityKind};
     use gpui::{
-        Context, InteractiveElement as _, IntoElement, Modifiers, ParentElement as _, Render,
-        ScrollDelta, ScrollWheelEvent, Styled as _, TestAppContext, TouchPhase, Window, div, point,
-        px, uniform_list,
+        AppContext as _, Context, InteractiveElement as _, IntoElement, Modifiers,
+        ParentElement as _, Render, ScrollDelta, ScrollWheelEvent, Styled as _, TestAppContext,
+        TouchPhase, Window, div, point, px, uniform_list,
     };
+    use gpui_component::Root;
+    use gpui_component::WindowExt;
     use gpui_component::button::Button;
+    use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
     use gpui_component::popover::Popover;
 
-    use super::{APP_ROW_H, MenuRow, compact_panel, friendly_app_name, identity_for_application};
+    use super::{
+        APP_ROW_H, MenuRow, ProfileChoice, compact_panel, friendly_app_name,
+        identity_for_application, open_remove_confirmation,
+    };
     use crate::ui::theme;
 
     #[test]
@@ -1187,6 +1185,64 @@ mod tests {
             *clicked.borrow(),
             Some(0),
             "after scrolling a different row sits under the cursor"
+        );
+    }
+
+    /// The production Remove control is a `dropdown_menu` so the confirm
+    /// dialog can open the same way forgetting a device does. A custom
+    /// overlay-closable popover swallows that dialog on the same click.
+    struct RemoveConfirmHarness;
+
+    impl Render for RemoveConfirmHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let profile = ProfileChoice {
+                app: "com.apple.Safari".into(),
+                name: "Safari".into(),
+                override_count: 1,
+                persisted: true,
+            };
+            Button::new("profile-options")
+                .label("Open")
+                .dropdown_menu_with_anchor(gpui::Anchor::TopLeft, move |menu, _, _| {
+                    menu.item(
+                        PopupMenuItem::element(|_, _| {
+                            div()
+                                .debug_selector(|| "remove-profile-item".into())
+                                .child("Remove profile…")
+                        })
+                        .on_click({
+                            let profile = profile.clone();
+                            move |_, window, cx| {
+                                open_remove_confirmation(window, cx, &profile);
+                            }
+                        }),
+                    )
+                })
+        }
+    }
+
+    #[gpui::test]
+    fn removing_a_profile_from_the_menu_opens_the_confirmation(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_cx| RemoveConfirmHarness);
+            Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        cx.simulate_click(point(px(20.), px(10.)), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let item = cx
+            .debug_bounds("remove-profile-item")
+            .expect("the remove item renders in the dropdown");
+        cx.simulate_click(item.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            cx.update(WindowExt::has_active_dialog),
+            "confirming Remove must open an alert, not dismiss into nothing"
         );
     }
 }
