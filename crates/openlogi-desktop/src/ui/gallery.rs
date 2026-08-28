@@ -247,6 +247,7 @@ impl ComponentGallery {
             h_flex()
                 .gap_2()
                 .flex_wrap()
+                .items_stretch()
                 .child(effect_tile(
                     "gallery-effect-selected",
                     "Solid",
@@ -569,7 +570,10 @@ fn effect_tile(
     ChoiceCard::new(id, label)
         .selected(selected)
         .disabled(disabled)
-        .w(px(118.))
+        .flex()
+        .flex_col()
+        .h_full()
+        .w(px(132.))
         .p_2()
         .rounded(pal.control_radius)
         .border_1()
@@ -585,14 +589,27 @@ fn effect_tile(
             v_flex()
                 .gap_1()
                 .w_full()
+                .flex_1()
                 .child(
                     div()
                         .h(px(28.))
                         .w_full()
+                        .flex_shrink_0()
                         .rounded(pal.control_radius)
                         .bg(gpui::rgb(preview)),
                 )
-                .child(div().text_caption().child(label)),
+                .child(
+                    div()
+                        .h(px(33.6))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_center()
+                        .text_caption()
+                        .line_clamp(2)
+                        .child(label),
+                ),
         )
 }
 
