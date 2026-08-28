@@ -2,7 +2,8 @@
 
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, InteractiveElement, IntoElement, ParentElement,
-    Render, Role, SharedString, Size, Styled, Window, WindowBounds, WindowOptions, div, px, rems,
+    Render, Role, SharedString, Size, Styled, Window, WindowBounds, WindowOptions, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 use gpui_base::Button as BaseButton;
 use gpui_component::{
@@ -57,7 +58,10 @@ pub(crate) fn run() {
 
         match opened {
             Ok(handle) => {
-                let _ = handle.update(cx, |_, window, _| window.activate_window());
+                let _ = handle.update(cx, |_, window, _| {
+                    window.set_window_title(TITLE);
+                    window.activate_window();
+                });
                 cx.activate(true);
             }
             Err(error) => {
@@ -495,7 +499,10 @@ impl Render for ComponentGallery {
             .size_full()
             .bg(pal.page)
             .text_color(pal.text_primary)
-            .child(crate::windows::aux_title_bar(TITLE, cx))
+            .when(
+                crate::windows::paints_client_titlebar(window) || cfg!(not(target_os = "linux")),
+                |this| this.child(crate::windows::aux_title_bar(TITLE, cx)),
+            )
             .child(self.toolbar(pal, cx))
             .child(
                 v_flex()
