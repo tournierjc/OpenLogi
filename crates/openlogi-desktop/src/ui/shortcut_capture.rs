@@ -3,6 +3,8 @@
 //! A text field cannot tell Home from a cursor-motion, or AZERTY `-` (the 6
 //! key) from the minus key or the numpad. This control intercepts GPUI
 //! keystrokes before keymap bindings and maps them to [`KeyCombo`] HID usages.
+//! Numpad digits are disambiguated from main-row digits via a passive OS probe
+//! because GPUI names both `6`.
 
 use gpui::{
     App, Context, ElementId, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
@@ -10,6 +12,8 @@ use gpui::{
     StatefulInteractiveElement as _, Styled, Subscription, Window, div, px, rgb,
 };
 use openlogi_core::binding::{CapturedKeystroke, KeyCombo};
+
+use crate::platform::shortcut_key;
 
 use super::theme::{self, ACCENT_BLUE, CONTROL_H, Typography as _};
 
@@ -24,6 +28,7 @@ pub(crate) struct ShortcutCapture {
 
 impl ShortcutCapture {
     pub(crate) fn new(id: impl Into<ElementId>, cx: &mut Context<Self>) -> Self {
+        shortcut_key::ensure_running();
         let focus_handle = cx.focus_handle();
         let listener = cx.listener(|this, event: &KeystrokeEvent, window, cx| {
             if !this.focus_handle.is_focused(window) {
@@ -51,8 +56,9 @@ impl ShortcutCapture {
     fn record(&mut self, keystroke: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         window.prevent_default();
+        let key = shortcut_key::disambiguate(&keystroke.key);
         let Some(combo) = KeyCombo::from_captured(
-            CapturedKeystroke::new(&keystroke.key, cx.keyboard_layout().name())
+            CapturedKeystroke::new(key.as_ref(), cx.keyboard_layout().name())
                 .command(keystroke.modifiers.platform)
                 .shift(keystroke.modifiers.shift)
                 .control(keystroke.modifiers.control)

@@ -612,6 +612,8 @@ mod tests {
         assert_eq!(captured("kp_subtract", "English (US)").key().code(), 0x56);
         assert_eq!(captured("add", "English (US)").key().code(), 0x57);
         assert_eq!(captured("6", "English (US)").key().code(), 0x23);
+        assert_eq!(captured("kp6", "English (US)").key().code(), 0x5e);
+        assert_eq!(captured("kp0", "English (US)").key().code(), 0x62);
         assert_eq!(captured("-", "English (US)").key().code(), 0x2d);
         assert_eq!(
             KeyCombo::from_captured(CapturedKeystroke::new("home", "English (US)").control(true),)
