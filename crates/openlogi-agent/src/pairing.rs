@@ -317,6 +317,7 @@ mod tests {
             capture_rearm_generation: Arc::new(0.into()),
             receiver_access: ReceiverAccess::default(),
             host_switch_links: Arc::new(RwLock::new(Vec::new())),
+            lighting: openlogi_agent_core::lighting::LightingHost::default(),
         }
     }
 

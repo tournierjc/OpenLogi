@@ -24,7 +24,7 @@ pub(crate) use device_key::DeviceKey;
 pub use devices::DeviceRecord;
 pub use light::LightCommandStatus;
 pub(crate) use load::Load;
-pub use load::{DpiStatus, SmartShiftLoad};
+pub use load::{DpiStatus, LightingLoad, SmartShiftLoad};
 
 /// Result of confirming a SmartShift write by reading the value back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +219,7 @@ impl AppState {
             state.load_current_smartshift(cx);
             state.confirm_current_smartshift(cx);
             state.load_onboard_bindings(cx);
+            state.load_current_lighting_info(cx);
         });
     }
 
