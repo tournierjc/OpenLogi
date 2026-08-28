@@ -405,10 +405,19 @@ impl AppState {
         else {
             return;
         };
+        self.remove_app_profile_for_device(&key, app);
+    }
+
+    /// Like [`Self::remove_app_profile`], but keyed explicitly. Callers that
+    /// already captured the device key — for example a confirm dialog opened
+    /// while a profile was selected — must use this so removal does not depend
+    /// on [`Self::current_record`] still being available when the dialog closes.
+    pub(crate) fn remove_app_profile_for_device(&mut self, device_key: &str, app: &str) {
         self.config
-            .edit(|config| config.remove_app_profile(&key, app));
-        if self.editing_app() == Some(app) {
-            self.set_editing_app(None);
+            .edit(|config| config.remove_app_profile(device_key, app));
+        if self.bindings.editing_app(Some(device_key)) == Some(app) {
+            self.bindings
+                .set_editing_app(&self.config, Some(device_key), None);
         }
         self.persist_and_reload("per-app profile");
     }
