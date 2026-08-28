@@ -373,7 +373,7 @@ fn transient_thumbwheel_pair_stays_in_memory_without_persistence() {
 }
 
 /// A state holding the one persistent mouse, so per-device config has a key.
-fn state_with_a_known_mouse() -> AppState {
+pub(crate) fn state_with_a_known_mouse() -> AppState {
     let cache = AssetResolver::new();
     let (commands, _receiver) = tokio::sync::mpsc::unbounded_channel();
     AppState::with_runtime(
@@ -579,6 +579,37 @@ fn removing_a_per_app_profile_drops_it_and_returns_to_the_default() {
         state.button_bindings().get(&ButtonId::Back),
         Some(&Action::Undo),
         "the canvas must not keep the deleted override"
+    );
+}
+
+#[test]
+fn removing_a_profile_for_device_uses_an_explicit_key() {
+    let mut state = state_editing("Counter-Strike 2");
+    state.commit_binding(ButtonId::Back, Action::Undo);
+    state.set_editing_app(Some("com.apple.Safari".into()));
+    state.config.edit(|config| {
+        config.set_per_app_binding(
+            KNOWN_MOUSE_KEY,
+            "com.apple.Safari",
+            ButtonId::Back,
+            Some(Action::Copy),
+        );
+    });
+
+    state.remove_app_profile_for_device(KNOWN_MOUSE_KEY, "Counter-Strike 2");
+
+    assert_eq!(state.editing_app(), Some("com.apple.Safari"));
+    assert!(
+        state
+            .config
+            .per_app_overrides(KNOWN_MOUSE_KEY, "Counter-Strike 2")
+            .is_none()
+    );
+    assert_eq!(
+        state
+            .config
+            .per_app_overrides(KNOWN_MOUSE_KEY, "com.apple.Safari"),
+        Some(&BTreeMap::from([(ButtonId::Back, Action::Copy)]))
     );
 }
 

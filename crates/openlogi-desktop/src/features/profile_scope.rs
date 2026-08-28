@@ -528,7 +528,7 @@ fn profile_scope_content(
         .child(add_app_popover(choices, catalog, icons, pal))
         .when_some(
             selected_profile.filter(|profile| profile.persisted),
-            |row, profile| row.child(profile_options_button(profile)),
+            |row, profile| row.child(profile_options_button(profile, pal)),
         )
 }
 
@@ -923,16 +923,19 @@ fn application_list_height(rows: usize) -> f32 {
     }
 }
 
-/// Same ellipsis → confirm path as forgetting a device: a `dropdown_menu`,
-/// not a custom overlay-closable popover. Opening an alert from inside that
-/// popover dismisses the overlay on the same click and the dialog never
-/// stays open — Remove looks like a no-op.
-fn profile_options_button(profile: ProfileChoice) -> impl IntoElement {
-    Button::new("profile-options")
-        .ghost()
-        .xsmall()
-        .icon(IconName::Ellipsis)
-        .dropdown_menu_with_anchor(Anchor::TopRight, profile_options_menu(profile))
+/// Ellipsis menu for the selected profile. The confirm alert is opened on the
+/// next frame so the dropdown can dismiss first — opening it inside the menu
+/// click dismisses both and Remove looks like a no-op.
+fn profile_options_button(profile: ProfileChoice, pal: Palette) -> impl IntoElement {
+    Button::new((
+        gpui::ElementId::from("profile-options"),
+        profile.app.clone(),
+    ))
+    .ghost()
+    .xsmall()
+    .text_color(pal.text_muted)
+    .icon(IconName::Ellipsis)
+    .dropdown_menu_with_anchor(Anchor::TopRight, profile_options_menu(profile))
 }
 
 fn profile_options_menu(
@@ -945,7 +948,10 @@ fn profile_options_menu(
                 .on_click({
                     let profile = profile.clone();
                     move |_, window, cx| {
-                        open_remove_confirmation(window, cx, &profile);
+                        let profile = profile.clone();
+                        window.defer(cx, move |window, cx| {
+                            open_remove_confirmation(window, cx, &profile);
+                        });
                     }
                 }),
         )
@@ -953,6 +959,16 @@ fn profile_options_menu(
 }
 
 fn open_remove_confirmation(window: &mut Window, cx: &mut App, profile: &ProfileChoice) {
+    let Some(device_key) = AppState::try_read(cx).and_then(|state| {
+        if !state.current_device_is_persistent() {
+            return None;
+        }
+        state
+            .current_record()
+            .map(|record| record.config_key.clone())
+    }) else {
+        return;
+    };
     let app = profile.app.clone();
     let question = match profile.override_count {
         1 => tr!(
@@ -980,9 +996,18 @@ fn open_remove_confirmation(window: &mut Window, cx: &mut App, profile: &Profile
             )
             .on_ok({
                 let app = app.clone();
-                move |_event, _window, cx| {
-                    AppState::update_bindings(cx, |state| {
-                        state.remove_app_profile(&app);
+                let device_key = device_key.clone();
+                move |_event, window, cx| {
+                    let app = app.clone();
+                    let device_key = device_key.clone();
+                    // Defer past dialog teardown and pin the device key now —
+                    // `current_record()` is not reliable inside the confirm
+                    // callback (same class of issue as opening this alert from
+                    // the ellipsis menu).
+                    window.defer(cx, move |_window, cx| {
+                        AppState::update_bindings(cx, |state| {
+                            state.remove_app_profile_for_device(&device_key, &app);
+                        });
                     });
                     true
                 }
@@ -1188,9 +1213,10 @@ mod tests {
         );
     }
 
-    /// The production Remove control is a `dropdown_menu` so the confirm
-    /// dialog can open the same way forgetting a device does. A custom
-    /// overlay-closable popover swallows that dialog on the same click.
+    use crate::state::AppState;
+    use crate::state::tests::state_with_a_known_mouse;
+
+    /// Dropdown → deferred confirm, matching production's `window.defer` path.
     struct RemoveConfirmHarness;
 
     impl Render for RemoveConfirmHarness {
@@ -1213,7 +1239,10 @@ mod tests {
                         .on_click({
                             let profile = profile.clone();
                             move |_, window, cx| {
-                                open_remove_confirmation(window, cx, &profile);
+                                let profile = profile.clone();
+                                window.defer(cx, move |window, cx| {
+                                    open_remove_confirmation(window, cx, &profile);
+                                });
                             }
                         }),
                     )
@@ -1222,8 +1251,11 @@ mod tests {
     }
 
     #[gpui::test]
-    fn removing_a_profile_from_the_menu_opens_the_confirmation(cx: &mut TestAppContext) {
+    fn removing_a_profile_opens_the_confirmation(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
+        cx.update(|cx| {
+            AppState::set_global(cx.new(|_| state_with_a_known_mouse()), cx);
+        });
         let (_, cx) = cx.add_window_view(|window, cx| {
             let view = cx.new(|_cx| RemoveConfirmHarness);
             Root::new(view, window, cx)
@@ -1239,10 +1271,12 @@ mod tests {
             .expect("the remove item renders in the dropdown");
         cx.simulate_click(item.center(), Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
+        // `window.defer` opens the alert on the next effect cycle.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
 
         assert!(
             cx.update(WindowExt::has_active_dialog),
-            "confirming Remove must open an alert, not dismiss into nothing"
+            "Remove must open a confirm alert after the menu dismisses"
         );
     }
 }
