@@ -5958,9 +5958,11 @@ dependencies = [
  "appcatalog",
  "appicon",
  "backon",
+ "block2 0.6.2",
  "derive_more",
  "disclaim",
  "embed-resource",
+ "evdev",
  "gpui",
  "gpui-base",
  "gpui-component",
@@ -5993,6 +5995,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "walkdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
