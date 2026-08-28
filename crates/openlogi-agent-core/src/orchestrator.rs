@@ -17,7 +17,7 @@ use std::sync::{Arc, RwLock};
 use openlogi_core::app::ForegroundApp;
 use openlogi_core::binding::{Action, Binding};
 use openlogi_core::bindings::{button_bindings_for, oshook_gestures_for};
-use openlogi_core::config::{Config, LightSettings, ScrollResolution};
+use openlogi_core::config::{Config, LightSettings, Lighting, ScrollResolution};
 use openlogi_core::device::{
     Capabilities, DeviceInventory, DeviceKind, LightCapabilities, StandaloneDevice,
 };
@@ -520,13 +520,20 @@ impl Orchestrator {
         let smartshift = device
             .and_then(|d| d.effective_smartshift(&route_key))
             .map(openlogi_hid::SmartShiftStatus::from);
-        if resolution.is_some() || inverted.is_some() || dpi.is_some() || smartshift.is_some() {
+        let report_rate = device.and_then(|d| d.effective_report_rate(&route_key));
+        if resolution.is_some()
+            || inverted.is_some()
+            || dpi.is_some()
+            || smartshift.is_some()
+            || report_rate.is_some()
+        {
             crate::hardware::reapply_mouse_volatile_in_background(
                 &self.shared.device(&route),
                 resolution,
                 inverted,
                 dpi,
                 smartshift,
+                report_rate,
             );
         }
         if let Some(lighting) = device
@@ -773,6 +780,19 @@ impl Orchestrator {
         // them with the keyboard's effective bindings.
         self.publish_device_runtime();
         true
+    }
+
+    /// Remember a lighting change pushed over IPC so reconnect re-apply matches
+    /// the GUI without a full config reload.
+    pub fn store_lighting(&mut self, route: &DeviceRoute, lighting: Lighting) {
+        let Some(dev) = self
+            .devices
+            .iter()
+            .find(|dev| dev.route.as_ref() == Some(route))
+        else {
+            return;
+        };
+        self.config.set_lighting(dev.config_key.as_str(), lighting);
     }
 
     /// Replace the config (after `config.toml` changed) and rebuild everything.
