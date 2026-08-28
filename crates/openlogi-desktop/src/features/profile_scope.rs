@@ -923,9 +923,9 @@ fn application_list_height(rows: usize) -> f32 {
     }
 }
 
-/// Ellipsis menu for the selected profile. The confirm alert is opened on the
-/// next frame so the dropdown can dismiss first — opening it inside the menu
-/// click dismisses both and Remove looks like a no-op.
+/// Ellipsis menu for the selected profile. Open the confirm alert synchronously
+/// from the menu click — same path as forgetting a device. `window.defer` never
+/// surfaced the dialog in the running app.
 fn profile_options_button(profile: ProfileChoice, pal: Palette) -> impl IntoElement {
     Button::new((
         gpui::ElementId::from("profile-options"),
@@ -948,10 +948,7 @@ fn profile_options_menu(
                 .on_click({
                     let profile = profile.clone();
                     move |_, window, cx| {
-                        let profile = profile.clone();
-                        window.defer(cx, move |window, cx| {
-                            open_remove_confirmation(window, cx, &profile);
-                        });
+                        open_remove_confirmation(window, cx, &profile);
                     }
                 }),
         )
@@ -1217,7 +1214,7 @@ mod tests {
         );
     }
 
-    /// Dropdown → deferred confirm, matching production's `window.defer` path.
+    /// Dropdown → confirm, matching production's synchronous menu path.
     struct RemoveConfirmHarness;
 
     impl Render for RemoveConfirmHarness {
@@ -1240,10 +1237,7 @@ mod tests {
                         .on_click({
                             let profile = profile.clone();
                             move |_, window, cx| {
-                                let profile = profile.clone();
-                                window.defer(cx, move |window, cx| {
-                                    open_remove_confirmation(window, cx, &profile);
-                                });
+                                open_remove_confirmation(window, cx, &profile);
                             }
                         }),
                     )
@@ -1272,12 +1266,10 @@ mod tests {
             .expect("the remove item renders in the dropdown");
         cx.simulate_click(item.center(), Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        // `window.defer` opens the alert on the next effect cycle.
-        cx.update(|window, cx| window.draw(cx).clear(cx));
 
         assert!(
             cx.update(WindowExt::has_active_dialog),
-            "Remove must open a confirm alert after the menu dismisses"
+            "Remove must open a confirm alert from the dropdown menu"
         );
     }
 
