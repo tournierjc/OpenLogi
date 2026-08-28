@@ -176,6 +176,7 @@ fn detail_navigation(
         .w(px(DETAIL_RAIL_W))
         .h_full()
         .flex_shrink_0()
+        .overflow_x_hidden()
         .gap_1()
         .border_r_1()
         .border_color(pal.border)
@@ -223,7 +224,13 @@ fn detail_navigation(
                         .size_4()
                         .flex_none(),
                 )
-                .child(tab.label())
+                .child(
+                    // A flex item's default min-content width is the full
+                    // label, which is how longer locales painted across the
+                    // divider. Bound it to the leftover rail and wrap at two
+                    // lines before ellipsizing.
+                    div().flex_1().min_w_0().line_clamp(2).child(tab.label()),
+                )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.active_tab = tab;
                     cx.notify();
