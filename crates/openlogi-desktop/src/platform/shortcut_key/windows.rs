@@ -10,13 +10,10 @@ use std::thread;
 use tracing::warn;
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    VIRTUAL_KEY, VK_NUMPAD0, VK_NUMPAD9,
-};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VIRTUAL_KEY, VK_NUMPAD0, VK_NUMPAD9};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT,
-    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN,
-    WM_SYSKEYDOWN,
+    CallNextHookEx, DispatchMessageW, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, SetWindowsHookExW,
+    TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
 };
 
 use super::state::{PhysicalKey, record};
@@ -40,14 +37,8 @@ pub(super) fn start() {
 }
 
 fn hook_thread(ready_tx: mpsc::Sender<Result<(), String>>) {
-    let hook = unsafe {
-        SetWindowsHookExW(
-            WH_KEYBOARD_LL,
-            Some(keyboard_proc),
-            std::ptr::null_mut(),
-            0,
-        )
-    };
+    let hook =
+        unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), std::ptr::null_mut(), 0) };
     if hook.is_null() {
         ready_tx
             .send(Err("SetWindowsHookExW(WH_KEYBOARD_LL) failed".into()))

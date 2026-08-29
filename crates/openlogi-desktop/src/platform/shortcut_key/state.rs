@@ -39,7 +39,10 @@ pub fn disambiguate(gpui_key: &str) -> Cow<'_, str> {
     match physical {
         PhysicalKey::KeypadDigit(digit) => {
             if gpui_key.len() == 1
-                && gpui_key.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+                && gpui_key
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_ascii_digit())
                 && gpui_key.parse::<u8>() == Ok(digit)
             {
                 return Cow::Owned(format!("kp{digit}"));
