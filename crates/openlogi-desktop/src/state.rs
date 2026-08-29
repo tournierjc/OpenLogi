@@ -169,8 +169,6 @@ pub struct AppState {
     devices: DeviceStore,
     /// Binding-editor scope and projections derived from config.
     bindings: BindingState,
-    /// Per-device Actions Ring editor scope (window-local, not persisted).
-    action_ring_editing_apps: BTreeMap<String, String>,
     /// DPI/SmartShift reads and the active pointer editor value.
     pointer: PointerState,
     /// Standalone-light sequencing and aggregate camera activity.
@@ -278,7 +276,6 @@ impl AppState {
             agent: AgentSession::default(),
             devices: DeviceStore::new(device_list, current_device),
             bindings,
-            action_ring_editing_apps: BTreeMap::new(),
             pointer: PointerState::default(),
             lighting: LightingState::default(),
             ipc_commands,
@@ -343,7 +340,9 @@ impl AppState {
             record
                 .persistent_config_key()
                 .and_then(|key| self.config.devices.get(key))
-                .and_then(|device| device.effective_dpi(&record.route_key))
+                .and_then(|device| {
+                    device.effective_dpi_for_app(&record.route_key, self.editing_app())
+                })
         }) {
             self.pointer.dpi = dpi;
         }
@@ -351,9 +350,24 @@ impl AppState {
             record
                 .persistent_config_key()
                 .and_then(|key| self.config.devices.get(key))
-                .and_then(|device| device.effective_report_rate(&record.route_key))
+                .and_then(|device| {
+                    device.effective_report_rate_for_app(&record.route_key, self.editing_app())
+                })
         }) {
             self.pointer.report_rate = rate;
+        }
+        if let Some(status) = self.current_record().and_then(|record| {
+            record.persistent_config_key().and_then(|key| {
+                self.config.devices.get(key).and_then(|device| {
+                    device
+                        .effective_smartshift_for_app(&record.route_key, self.editing_app())
+                        .map(openlogi_core::hid::SmartShiftStatus::from)
+                })
+            })
+        }) {
+            if let Some(key) = self.current_record().map(DeviceRecord::device_key) {
+                self.pointer.reads.set_smartshift_ready(&key, status);
+            }
         }
     }
 
@@ -420,10 +434,7 @@ impl AppState {
             .into_iter()
             .flat_map(move |key| {
                 self.config.app_profiles(key).map(move |app| {
-                    let count = self
-                        .config
-                        .per_app_overrides(key, app)
-                        .map_or(0, BTreeMap::len);
+                    let count = self.config.app_profile_override_count(key, app);
                     (app, count)
                 })
             })
@@ -449,6 +460,15 @@ impl AppState {
             .iter()
             .find(|seen| seen.id == app)
             .map(|seen| seen.display_name.as_str())
+    }
+
+    /// Override groups stored for `app` on the active device.
+    #[must_use]
+    pub fn app_profile_override_count(&self, app: &str) -> usize {
+        self.current_record()
+            .and_then(DeviceRecord::persistent_config_key)
+            .map(|key| self.config.app_profile_override_count(key, app))
+            .unwrap_or(0)
     }
 
     /// The application whose profile the user is asking about.
