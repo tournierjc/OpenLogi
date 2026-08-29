@@ -23,7 +23,7 @@ use crate::features::lighting::standalone::LightPanel;
 use crate::features::mouse::view::MouseModelView;
 use crate::features::pointer::dpi::DpiPanel;
 use crate::features::pointer::smartshift::SmartShiftPanel;
-use crate::features::profile_scope::{AppCatalogPicker, ProfileIconCache};
+use crate::features::profiles::{AppCatalogPicker, ProfileIconCache};
 use crate::services::assets::AssetResolver;
 use crate::state::{AgentLink, AppState, DeviceRecord, StateEvent};
 use crate::ui::theme::{self, ContentWidth, Typography as _};
@@ -161,7 +161,10 @@ impl DetailTab {
 /// Binding chrome this view itself rebuilds. Child panels subscribe on their
 /// own; the profile bar (Buttons) and the configuration card (Device) do not.
 fn root_paints_binding_chrome(tab: DetailTab) -> bool {
-    matches!(tab, DetailTab::Buttons | DetailTab::Device)
+    matches!(
+        tab,
+        DetailTab::Buttons | DetailTab::ActionsRing | DetailTab::Device
+    )
 }
 
 /// Root application view.
@@ -945,6 +948,7 @@ mod tests {
     #[test]
     fn binding_changes_rebuild_the_buttons_profile_bar() {
         assert!(root_paints_binding_chrome(DetailTab::Buttons));
+        assert!(root_paints_binding_chrome(DetailTab::ActionsRing));
         assert!(root_paints_binding_chrome(DetailTab::Device));
         assert!(!root_paints_binding_chrome(DetailTab::Pointer));
         assert!(!root_paints_binding_chrome(DetailTab::Keys));
