@@ -127,6 +127,78 @@ impl LinkOverrides {
     }
 }
 
+/// Pointer, lighting, and scroll settings scoped to one application profile.
+///
+/// Each `Some` field replaces the device default for that app; unset fields
+/// inherit the global device (and link) values at runtime.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PerAppDeviceSettings {
+    /// Sensor DPI override for this application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpi: Option<Dpi>,
+    /// DPI preset list override for this application.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dpi_presets: Vec<Dpi>,
+    /// SmartShift override for this application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smartshift: Option<SmartShift>,
+    /// Report-rate override for this application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_rate: Option<ReportRateHz>,
+    /// Scroll inversion override for this application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invert_scroll: Option<bool>,
+    /// Wheel resolution override for this application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_resolution: Option<ScrollResolution>,
+    /// RGB lighting override for this application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<Lighting>,
+}
+
+impl PerAppDeviceSettings {
+    /// Whether this profile carries no saved overrides.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.dpi.is_none()
+            && self.dpi_presets.is_empty()
+            && self.smartshift.is_none()
+            && self.report_rate.is_none()
+            && self.invert_scroll.is_none()
+            && self.scroll_resolution.is_none()
+            && self.lighting.is_none()
+    }
+
+    /// Count saved override groups for profile chrome.
+    #[must_use]
+    pub fn override_count(&self) -> usize {
+        let mut count = 0;
+        if self.dpi.is_some() {
+            count += 1;
+        }
+        if !self.dpi_presets.is_empty() {
+            count += 1;
+        }
+        if self.smartshift.is_some() {
+            count += 1;
+        }
+        if self.report_rate.is_some() {
+            count += 1;
+        }
+        if self.invert_scroll.is_some() {
+            count += 1;
+        }
+        if self.scroll_resolution.is_some() {
+            count += 1;
+        }
+        if self.lighting.is_some() {
+            count += 1;
+        }
+        count
+    }
+}
+
 /// Settings scoped to a single physical device.
 ///
 /// Deserialization goes through `RawDeviceConfig` (`#[serde(from)]`) so
@@ -198,6 +270,9 @@ pub struct DeviceConfig {
     /// action, never a per-direction gesture overlay.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub per_app_bindings: BTreeMap<String, BTreeMap<ButtonId, Action>>,
+    /// Per-application pointer, scroll, and lighting overrides.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub per_app_settings: BTreeMap<String, PerAppDeviceSettings>,
     /// Host-rendered Actions Ring settings and complete per-application layouts.
     #[serde(default, skip_serializing_if = "ActionRingConfig::is_default")]
     pub action_ring: ActionRingConfig,
@@ -335,6 +410,89 @@ impl DeviceConfig {
             .or(self.report_rate)
     }
 
+    /// Sensor DPI for `route_key`, optionally overlaid by a foreground app.
+    #[must_use]
+    pub fn effective_dpi_for_app(
+        &self,
+        route_key: &str,
+        app: Option<&str>,
+    ) -> Option<Dpi> {
+        app.and_then(|app| self.per_app_settings.get(app))
+            .and_then(|settings| settings.dpi)
+            .or_else(|| self.effective_dpi(route_key))
+    }
+
+    /// DPI presets for `app`, or the device default when unset.
+    #[must_use]
+    pub fn effective_dpi_presets_for_app(
+        &self,
+        app: Option<&str>,
+    ) -> Option<&[Dpi]> {
+        app.and_then(|app| self.per_app_settings.get(app))
+            .filter(|settings| !settings.dpi_presets.is_empty())
+            .map(|settings| settings.dpi_presets.as_slice())
+    }
+
+    /// SmartShift for `route_key`, optionally overlaid by a foreground app.
+    #[must_use]
+    pub fn effective_smartshift_for_app(
+        &self,
+        route_key: &str,
+        app: Option<&str>,
+    ) -> Option<SmartShift> {
+        app.and_then(|app| self.per_app_settings.get(app))
+            .and_then(|settings| settings.smartshift)
+            .or_else(|| self.effective_smartshift(route_key))
+    }
+
+    /// Report rate for `route_key`, optionally overlaid by a foreground app.
+    #[must_use]
+    pub fn effective_report_rate_for_app(
+        &self,
+        route_key: &str,
+        app: Option<&str>,
+    ) -> Option<ReportRateHz> {
+        app.and_then(|app| self.per_app_settings.get(app))
+            .and_then(|settings| settings.report_rate)
+            .or_else(|| self.effective_report_rate(route_key))
+    }
+
+    /// Native wheel inversion for `route_key`, optionally overlaid by a foreground app.
+    #[must_use]
+    pub fn effective_invert_scroll_for_app(
+        &self,
+        route_key: &str,
+        app: Option<&str>,
+    ) -> bool {
+        app.and_then(|app| self.per_app_settings.get(app))
+            .and_then(|settings| settings.invert_scroll)
+            .unwrap_or_else(|| self.effective_invert_scroll(route_key))
+    }
+
+    /// Wheel resolution for `route_key`, optionally overlaid by a foreground app.
+    #[must_use]
+    pub fn effective_scroll_resolution_for_app(
+        &self,
+        route_key: &str,
+        app: Option<&str>,
+    ) -> Option<ScrollResolution> {
+        app.and_then(|app| self.per_app_settings.get(app))
+            .and_then(|settings| settings.scroll_resolution)
+            .or_else(|| self.effective_scroll_resolution(route_key))
+    }
+
+    /// Lighting for `route_key`, optionally overlaid by a foreground app.
+    #[must_use]
+    pub fn effective_lighting_for_app(
+        &self,
+        route_key: &str,
+        app: Option<&str>,
+    ) -> Option<&Lighting> {
+        app.and_then(|app| self.per_app_settings.get(app))
+            .and_then(|settings| settings.lighting.as_ref())
+            .or_else(|| self.effective_lighting(route_key))
+    }
+
     fn link_overrides(&self, route_key: &str) -> Option<&LinkOverrides> {
         self.links.get(route_key).map(|link| &link.overrides)
     }
@@ -373,6 +531,7 @@ impl Default for DeviceConfig {
             bindings: BTreeMap::new(),
             disabled_gestures: BTreeMap::new(),
             per_app_bindings: BTreeMap::new(),
+            per_app_settings: BTreeMap::new(),
             action_ring: ActionRingConfig::default(),
             dpi_presets: Vec::new(),
             dpi: None,
@@ -481,11 +640,15 @@ struct RawDeviceConfig {
     #[serde(default)]
     per_app_bindings: BTreeMap<String, BTreeMap<ButtonId, Action>>,
     #[serde(default)]
+    per_app_settings: BTreeMap<String, PerAppDeviceSettings>,
+    #[serde(default)]
     action_ring: ActionRingConfig,
     #[serde(default, deserialize_with = "deserialize_dpi_presets")]
     dpi_presets: Vec<Dpi>,
     #[serde(default, deserialize_with = "deserialize_optional_dpi")]
     dpi: Option<Dpi>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    report_rate: Option<ReportRateHz>,
     #[serde(default)]
     lighting: Option<Lighting>,
     #[serde(default)]
@@ -554,10 +717,11 @@ impl From<RawDeviceConfig> for DeviceConfig {
             bindings,
             disabled_gestures: raw.disabled_gestures,
             per_app_bindings: raw.per_app_bindings,
+            per_app_settings: raw.per_app_settings,
             action_ring: raw.action_ring,
             dpi_presets: raw.dpi_presets,
             dpi: raw.dpi,
-            report_rate: None,
+            report_rate: raw.report_rate,
             lighting: raw.lighting,
             light: raw.light,
             smartshift: raw.smartshift,

@@ -8,8 +8,8 @@ use openlogi_core::binding::{
     Action, ActionRingIcon, ActionRingSlot, Binding, ButtonId, RingAction,
 };
 use openlogi_core::config::{
-    Config, DeviceIdentity, LightSettings, Lighting, ScrollResolution, ThumbwheelSensitivity,
-    VerticalScrollSensitivity,
+    Config, DeviceIdentity, LightSettings, Lighting, PerAppDeviceSettings, ScrollResolution,
+    ThumbwheelSensitivity, VerticalScrollSensitivity,
 };
 use openlogi_core::device::{
     BatteryInfo, BatteryLevel, BatteryStatus, Capabilities, DeviceInventory, DeviceKind,
@@ -526,6 +526,84 @@ fn a_binding_committed_in_a_per_app_profile_leaves_the_global_one_alone() {
     );
 }
 
+#[test]
+fn switching_editing_profile_updates_displayed_dpi() {
+    let mut state = state_with_a_known_mouse();
+    state.config.edit(|config| {
+        let device = config.devices.entry(KNOWN_MOUSE_KEY.to_string()).or_default();
+        device.dpi = Some(Dpi::new(800));
+        device.per_app_settings.insert(
+            "Counter-Strike 2".to_string(),
+            PerAppDeviceSettings {
+                dpi: Some(Dpi::new(1600)),
+                ..PerAppDeviceSettings::default()
+            },
+        );
+    });
+    state.pointer.dpi = Dpi::new(800);
+
+    state.set_editing_app(Some("Counter-Strike 2".into()));
+    assert_eq!(state.dpi(), Dpi::new(1600));
+
+    state.set_editing_app(None);
+    assert_eq!(state.dpi(), Dpi::new(800));
+}
+
+#[test]
+fn switching_editing_profile_updates_displayed_report_rate() {
+    use openlogi_core::hid::ReportRateHz;
+
+    let mut state = state_with_a_known_mouse();
+    state.config.edit(|config| {
+        let device = config.devices.entry(KNOWN_MOUSE_KEY.to_string()).or_default();
+        device.report_rate = Some(ReportRateHz::new(500));
+        device.per_app_settings.insert(
+            "Counter-Strike 2".to_string(),
+            PerAppDeviceSettings {
+                report_rate: Some(ReportRateHz::new(1000)),
+                ..PerAppDeviceSettings::default()
+            },
+        );
+    });
+    state.pointer.report_rate = ReportRateHz::new(500);
+
+    state.set_editing_app(Some("Counter-Strike 2".into()));
+    assert_eq!(state.report_rate(), ReportRateHz::new(1000));
+
+    state.set_editing_app(None);
+    assert_eq!(state.report_rate(), ReportRateHz::new(500));
+}
+
+#[test]
+fn switching_editing_profile_updates_configured_wheel_mode() {
+    let mut state = state_with_a_known_mouse();
+    state.config.edit(|config| {
+        let device = config.devices.entry(KNOWN_MOUSE_KEY.to_string()).or_default();
+        device.invert_scroll = false;
+        device.per_app_settings.insert(
+            "Counter-Strike 2".to_string(),
+            PerAppDeviceSettings {
+                invert_scroll: Some(true),
+                scroll_resolution: Some(ScrollResolution::High),
+                ..PerAppDeviceSettings::default()
+            },
+        );
+    });
+
+    assert_eq!(state.configured_wheel_mode_for_editing(), (None, None));
+
+    state.set_editing_app(Some("Counter-Strike 2".into()));
+    assert_eq!(
+        state.configured_wheel_mode_for_editing(),
+        (None, None),
+        "the fixture mouse does not advertise native wheel capabilities"
+    );
+    assert!(state.current_invert_scroll());
+
+    state.set_editing_app(None);
+    assert!(!state.current_invert_scroll());
+}
+
 fn ring_action(action: Action) -> RingAction {
     RingAction::new(action).expect("test action must be valid in the Actions Ring")
 }
@@ -535,7 +613,7 @@ fn an_unsaved_action_ring_profile_inherits_default_until_its_first_edit() {
     let mut state = state_with_a_known_mouse();
     let inherited = state.current_action_ring_layout();
 
-    state.set_editing_action_ring_app(Some("com.apple.Safari".into()));
+    state.set_editing_app(Some("com.apple.Safari".into()));
 
     assert_eq!(state.current_action_ring_layout(), inherited);
     assert!(
@@ -565,7 +643,7 @@ fn an_unsaved_action_ring_profile_inherits_default_until_its_first_edit() {
 #[test]
 fn an_action_ring_icon_edit_targets_the_open_application_layout() {
     let mut state = state_with_a_known_mouse();
-    state.set_editing_action_ring_app(Some("com.apple.Safari".into()));
+    state.set_editing_app(Some("com.apple.Safari".into()));
 
     state.commit_action_ring_icon(ActionRingSlot::Top, Some(ActionRingIcon::Keyboard));
 
@@ -578,27 +656,21 @@ fn an_action_ring_icon_edit_targets_the_open_application_layout() {
 }
 
 #[test]
-fn removing_an_action_ring_profile_leaves_button_overrides_untouched() {
+fn removing_a_profile_drops_action_ring_and_button_overrides() {
     let mut state = state_with_a_known_mouse();
     state.set_editing_app(Some("com.apple.Safari".into()));
     state.commit_binding(ButtonId::Back, Action::Undo);
-    state.set_editing_action_ring_app(Some("com.apple.Safari".into()));
     state.commit_action_ring_slot(ActionRingSlot::Top, Some(ring_action(Action::NewTab)));
 
-    state.remove_editing_action_ring_profile();
+    state.remove_app_profile_for_device(KNOWN_MOUSE_KEY, "com.apple.Safari");
 
-    assert_eq!(state.editing_action_ring_app(), None);
+    assert_eq!(state.editing_app(), None);
     assert!(state.current_action_ring().per_app.is_empty());
-    assert_eq!(
+    assert!(
         state
             .config
-            .per_app_overrides(KNOWN_MOUSE_KEY, "com.apple.Safari"),
-        Some(&BTreeMap::from([(ButtonId::Back, Action::Undo)]))
-    );
-    assert_eq!(
-        state.editing_app(),
-        Some("com.apple.Safari"),
-        "the Buttons editor keeps its independent scope"
+            .per_app_overrides(KNOWN_MOUSE_KEY, "com.apple.Safari")
+            .is_none()
     );
 }
 
@@ -638,7 +710,7 @@ fn removing_a_per_app_profile_drops_it_and_returns_to_the_default() {
         vec![("com.apple.Safari", 1)]
     );
 
-    state.remove_app_profile_for_device(KNOWN_MOUSE_KEY, "com.apple.Safari");
+    state.remove_editing_app_profile();
 
     assert_eq!(
         state.editing_app(),
@@ -840,6 +912,60 @@ fn a_profile_belongs_to_the_device_it_was_opened_on() {
 }
 
 #[test]
+fn removing_a_profile_on_a_background_device_does_not_clobber_active_projections() {
+    const SECOND_MOUSE_KEY: &str = "unit:11223344";
+
+    let cache = AssetResolver::new();
+    let (commands, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut state = AppState::with_runtime(
+        Config::ephemeral(),
+        &[
+            direct_inventory([0xa3, 0x93, 0xca, 0xe0]),
+            second_mouse_inventory(),
+        ],
+        &[],
+        &cache,
+        &[],
+        ConfigPersistence::MemoryOnly,
+        commands,
+    );
+    let other = state
+        .devices()
+        .iter()
+        .position(|record| record.config_key == SECOND_MOUSE_KEY)
+        .expect("the fixture pairs a second device");
+    let known = state
+        .devices()
+        .iter()
+        .position(|record| record.config_key == KNOWN_MOUSE_KEY)
+        .expect("the fixture pairs the known mouse");
+
+    state.set_current_device(known);
+    state.set_editing_app(Some("com.apple.Safari".into()));
+    state.commit_binding(ButtonId::Back, Action::Undo);
+
+    state.set_current_device(other);
+    state.set_editing_app(Some("com.apple.Safari".into()));
+    state.commit_binding(ButtonId::Back, Action::Redo);
+    let active_bindings = state.button_bindings().clone();
+
+    state.remove_app_profile_for_device(KNOWN_MOUSE_KEY, "com.apple.Safari");
+
+    assert_eq!(state.button_bindings(), &active_bindings);
+    assert_eq!(state.editing_app(), Some("com.apple.Safari"));
+    assert_eq!(
+        state.config.per_app_overrides(SECOND_MOUSE_KEY, "com.apple.Safari"),
+        Some(&BTreeMap::from([(ButtonId::Back, Action::Redo)]))
+    );
+    assert!(
+        state
+            .config
+            .per_app_overrides(KNOWN_MOUSE_KEY, "com.apple.Safari")
+            .is_none()
+    );
+}
+
+#[test]
 fn invalid_device_selection_preserves_the_valid_current_device() {
     let mut state = state_with_a_known_mouse();
     let selected = state.selected_device_index();
@@ -847,6 +973,24 @@ fn invalid_device_selection_preserves_the_valid_current_device() {
     assert_eq!(state.set_current_device(usize::MAX), None);
     assert_eq!(state.selected_device_index(), selected);
     assert!(state.current_record().is_some());
+}
+
+#[test]
+fn editing_profile_display_name_follows_the_open_editor_scope() {
+    let mut state = state_with_a_known_mouse();
+    state.set_foreground(ForegroundApps {
+        current: Some(app("com.google.Chrome", "Chrome")),
+        recent: vec![app("com.google.Chrome", "Chrome")],
+    });
+
+    state.set_editing_app(None);
+    assert_eq!(state.editing_profile_display_name(), None);
+
+    state.set_editing_app(Some("com.apple.Safari".into()));
+    assert_eq!(
+        state.editing_profile_display_name(),
+        Some("Safari".to_string())
+    );
 }
 
 #[test]

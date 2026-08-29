@@ -49,8 +49,19 @@ impl AppState {
             debug!("no persistent device key — DPI presets kept in memory only");
             return;
         };
-        self.config
-            .edit(|config| config.set_dpi_presets(&key, presets));
+        if let Some(app) = self.editing_app().map(str::to_string) {
+            self.config.edit(|config| {
+                config.devices
+                    .entry(key.clone())
+                    .or_default()
+                    .per_app_settings
+                    .entry(app)
+                    .or_default()
+                    .dpi_presets = presets;
+            });
+        } else {
+            self.config.edit(|config| config.set_dpi_presets(&key, presets));
+        }
         self.persist_and_reload("DPI presets");
     }
     /// Read the DPI preset list for the active device, or an empty `Vec`
@@ -58,8 +69,18 @@ impl AppState {
     #[must_use]
     pub fn dpi_presets(&self) -> Vec<Dpi> {
         self.current_record()
-            .and_then(DeviceRecord::persistent_config_key)
-            .map(|key| self.config.dpi_presets(key))
+            .and_then(|record| {
+                let key = record.persistent_config_key()?;
+                self.config.devices.get(key).and_then(|device| {
+                    device
+                        .effective_dpi_presets_for_app(self.editing_app())
+                        .map(<[Dpi]>::to_vec)
+                        .or_else(|| {
+                            let presets = self.config.dpi_presets(key);
+                            (!presets.is_empty()).then_some(presets)
+                        })
+                })
+            })
             .unwrap_or_default()
     }
     /// The active device's known DPI, falling back to [`DEFAULT_DPI`] until its
@@ -120,8 +141,20 @@ impl AppState {
         let persistent_key = record.persistent_config_key().map(str::to_string);
         let route = record.route.clone();
         if let Some(persistent_key) = persistent_key {
-            self.config
-                .edit(|config| config.set_dpi(&persistent_key, dpi));
+            if let Some(app) = self.editing_app().map(str::to_string) {
+                self.config.edit(|config| {
+                    config.devices
+                        .entry(persistent_key.clone())
+                        .or_default()
+                        .per_app_settings
+                        .entry(app)
+                        .or_default()
+                        .dpi = Some(dpi);
+                });
+            } else {
+                self.config
+                    .edit(|config| config.set_dpi(&persistent_key, dpi));
+            }
             if !self.persist_and_reload("DPI") {
                 return;
             }

@@ -34,7 +34,7 @@ use crate::features::pointer::dpi::DpiPanel;
 use crate::features::pointer::report_rate::ReportRatePanel;
 use crate::features::pointer::smartshift::SmartShiftPanel;
 use crate::features::profiles::{
-    AppCatalogPicker, ProfileIconCache, action_ring_profile_scope_bar, button_profile_scope_bar,
+    AppCatalogPicker, ProfileIconCache, device_profile_scope_bar,
 };
 use crate::state::{AppState, DeviceRecord, StateEvent};
 use crate::ui::battery::BatteryIndicator;
@@ -126,10 +126,14 @@ pub(super) fn detail_content(
             panels.dpi_panel,
             panels.report_rate_panel,
             panels.smartshift_panel,
+            profile_icons,
+            app_catalog,
             cx,
         )
         .into_any_element(),
-        DetailTab::Lighting => lighting_tab(panels.lighting_panel).into_any_element(),
+        DetailTab::Lighting => {
+            lighting_tab(panels.lighting_panel, profile_icons, app_catalog, cx).into_any_element()
+        }
         DetailTab::Camera => {
             camera_tab(panels.camera_preview, panels.camera_controls).into_any_element()
         }
@@ -260,6 +264,20 @@ fn detail_tab_icon(tab: DetailTab) -> &'static str {
     }
 }
 
+fn tab_with_profile_scope(
+    profile_icons: &ProfileIconCache,
+    app_catalog: &gpui::Entity<AppCatalogPicker>,
+    cx: &mut Context<AppView>,
+    body: impl IntoElement,
+) -> impl IntoElement {
+    v_flex()
+        .flex_1()
+        .w_full()
+        .min_h_0()
+        .children(device_profile_scope_bar(profile_icons, app_catalog, cx))
+        .child(body)
+}
+
 /// Buttons tab: profile context above the selectable device canvas and fixed
 /// binding inspector.
 fn buttons_tab(
@@ -268,12 +286,12 @@ fn buttons_tab(
     app_catalog: &gpui::Entity<AppCatalogPicker>,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
-    v_flex()
-        .flex_1()
-        .w_full()
-        .min_h_0()
-        .children(button_profile_scope_bar(profile_icons, app_catalog, cx))
-        .child(mouse_model.clone())
+    tab_with_profile_scope(
+        profile_icons,
+        app_catalog,
+        cx,
+        mouse_model.clone(),
+    )
 }
 
 fn tab_body(
@@ -301,16 +319,12 @@ fn action_ring_tab(
     app_catalog: &gpui::Entity<AppCatalogPicker>,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
-    v_flex()
-        .flex_1()
-        .w_full()
-        .min_h_0()
-        .children(action_ring_profile_scope_bar(
-            profile_icons,
-            app_catalog,
-            cx,
-        ))
-        .child(tab_body(ContentWidth::Medium, panel.clone()))
+    tab_with_profile_scope(
+        profile_icons,
+        app_catalog,
+        cx,
+        tab_body(ContentWidth::Medium, panel.clone()),
+    )
 }
 
 /// Pointer tab: the DPI panel, the SmartShift wheel controls, and the
@@ -321,46 +335,54 @@ fn pointer_tab(
     dpi_panel: &gpui::Entity<DpiPanel>,
     report_rate_panel: &gpui::Entity<ReportRatePanel>,
     smartshift_panel: &gpui::Entity<SmartShiftPanel>,
+    profile_icons: &ProfileIconCache,
+    app_catalog: &gpui::Entity<AppCatalogPicker>,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let pal = theme::palette(cx);
-    tab_body(
-        ContentWidth::Large,
-        h_flex()
-            .w_full()
-            .items_stretch()
-            .gap_4()
-            .flex_wrap()
-            .child(pointer_grid_card(
-                PanelCard::new(
-                    tr!("Pointer tuning"),
-                    Icon::empty().path("action-icons/gauge.svg"),
-                    dpi_panel.clone().into_any_element(),
-                )
-                .fill(),
-            ))
-            .child(pointer_grid_card(
-                PanelCard::new(
-                    tr!("SmartShift"),
-                    Icon::empty().path("action-icons/refresh-cw.svg"),
-                    smartshift_panel.clone().into_any_element(),
-                )
-                .fill(),
-            ))
-            .child(pointer_grid_card(
-                PanelCard::new(
-                    tr!("Report rate"),
-                    Icon::empty().path("action-icons/bolt.svg"),
-                    report_rate_panel.clone().into_any_element(),
-                )
-                .fill(),
-            ))
-            .child(
-                div()
-                    .min_w(POINTER_CARD_MIN_W)
-                    .flex_1()
-                    .child(scrolling_card(pal, cx)),
-            ),
+    let scrolling = scrolling_card(pal, cx).into_any_element();
+    tab_with_profile_scope(
+        profile_icons,
+        app_catalog,
+        cx,
+        tab_body(
+            ContentWidth::Large,
+            h_flex()
+                .w_full()
+                .items_stretch()
+                .gap_4()
+                .flex_wrap()
+                .child(pointer_grid_card(
+                    PanelCard::new(
+                        tr!("Pointer tuning"),
+                        Icon::empty().path("action-icons/gauge.svg"),
+                        dpi_panel.clone().into_any_element(),
+                    )
+                    .fill(),
+                ))
+                .child(pointer_grid_card(
+                    PanelCard::new(
+                        tr!("SmartShift"),
+                        Icon::empty().path("action-icons/refresh-cw.svg"),
+                        smartshift_panel.clone().into_any_element(),
+                    )
+                    .fill(),
+                ))
+                .child(pointer_grid_card(
+                    PanelCard::new(
+                        tr!("Report rate"),
+                        Icon::empty().path("action-icons/bolt.svg"),
+                        report_rate_panel.clone().into_any_element(),
+                    )
+                    .fill(),
+                ))
+                .child(
+                    div()
+                        .min_w(POINTER_CARD_MIN_W)
+                        .flex_1()
+                        .child(scrolling),
+                ),
+        ),
     )
 }
 
@@ -554,13 +576,23 @@ fn wheel_resolution_control(selected: Option<ScrollResolution>, enabled: bool) -
 /// Lighting tab: effect tiles, parameters, and zone chips in a titled card.
 /// Shown when the device reports a lighting capability — see
 /// [`DetailTab::tabs_for`].
-fn lighting_tab(lighting_panel: &gpui::Entity<LightingPanel>) -> impl IntoElement {
-    tab_body(
-        ContentWidth::Large,
-        PanelCard::new(
-            tr!("Lighting"),
-            Icon::new(IconName::Palette),
-            lighting_panel.clone().into_any_element(),
+fn lighting_tab(
+    lighting_panel: &gpui::Entity<LightingPanel>,
+    profile_icons: &ProfileIconCache,
+    app_catalog: &gpui::Entity<AppCatalogPicker>,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    tab_with_profile_scope(
+        profile_icons,
+        app_catalog,
+        cx,
+        tab_body(
+            ContentWidth::Large,
+            PanelCard::new(
+                tr!("Lighting"),
+                Icon::new(IconName::Palette),
+                lighting_panel.clone().into_any_element(),
+            ),
         ),
     )
 }
@@ -722,8 +754,8 @@ fn configuration_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoEleme
                     state.device_gesture_binding_count(),
                     state.dpi_presets().len(),
                     state
-                        .active_profile_name()
-                        .map_or_else(|| tr!("Default profile").to_string(), str::to_owned),
+                        .editing_profile_display_name()
+                        .map_or_else(|| tr!("Default profile").to_string(), |name| name),
                 )
             },
         );

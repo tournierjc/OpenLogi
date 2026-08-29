@@ -17,6 +17,7 @@ use openlogi_core::hid::{LightCommand, PairingError, WriteError};
 use crate::probe_cache::FileProbeCacheStore;
 use crate::transport::native_backend;
 use openlogi_core::hid::smartshift::{SmartShiftAutoDisengage, SmartShiftMode, SmartShiftStatus};
+use openlogi_device::SharedChannel;
 use openlogi_device::ChannelPool;
 use openlogi_device::backend::{HidBackend, HotplugStream};
 use openlogi_device::backlight::BacklightState;
@@ -264,6 +265,16 @@ pub async fn apply_onboard_button_bindings(
     >,
 ) -> Result<(), WriteError> {
     device::apply_onboard_button_bindings(&*native_backend(), route, bindings).await
+}
+
+/// Advance the active onboard profile stored in device flash for `route`.
+pub async fn cycle_onboard_profile(route: &DeviceRoute) -> Result<u8, WriteError> {
+    device::cycle_onboard_profile(&*native_backend(), route).await
+}
+
+/// Advance the active onboard profile on an already-open channel.
+pub async fn cycle_onboard_profile_on(shared: &SharedChannel) -> Result<u8, WriteError> {
+    device::cycle_onboard_profile_on(shared).await
 }
 
 /// Read the raw battery report of the device `route` reaches.

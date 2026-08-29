@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use openlogi_core::app::ForegroundApp;
 use openlogi_core::binding::{Action, ActionRingIcon, ActionRingSlot, ButtonId};
-use openlogi_core::config::Lighting;
+use openlogi_core::config::{Lighting, ScrollResolution};
 use openlogi_core::device::{DeviceInventory, StandaloneDevice};
 use openlogi_core::hid::{
     DeviceRoute, Dpi, DpiInfo, LightCommand, LightingInfo, OnboardProfileSnapshot, PairingError,
@@ -71,7 +71,8 @@ pub use succession::Identity;
 ///      appended so the Lighting tab can filter firmware and host prefabs.
 /// v34: [`Capabilities::report_rate`] appended; [`Agent::read_report_rate`] and
 ///      [`Agent::set_report_rate`] appended for HID++ `0x8060`/`0x8061`.
-pub const PROTOCOL_VERSION: u32 = 34;
+/// v35: [`Agent::set_scroll_wheel_mode`] appended for native HiResWheel preview.
+pub const PROTOCOL_VERSION: u32 = 35;
 
 /// Environment variable through which the agent hands a supervised helper the
 /// run token it will serve, so the helper knows which agent it belongs to
@@ -329,15 +330,13 @@ impl From<PairingError> for PairingFailure {
             PairingError::Timeout => Self::Timeout,
             PairingError::Device(code) => Self::Device { code },
             PairingError::Cancelled => Self::Cancelled,
-            // The public agent API prevents this library-boundary rejection;
-            // retain the existing wire enum if an in-process caller violates it.
-            PairingError::UnsupportedCommand => Self::Hid {
-                message: "pairing command is not supported by the active receiver".into(),
-            },
             // Carried as the generic transport-failure message so the wire
             // format stays unchanged (PairingFailure variants are append-only).
             PairingError::MalformedNotification(what) => Self::Hid {
                 message: format!("malformed pairing notification ({what})"),
+            },
+            PairingError::UnsupportedCommand => Self::Hid {
+                message: "unsupported pairing command".into(),
             },
         }
     }
@@ -587,4 +586,11 @@ pub trait Agent {
     async fn read_report_rate(route: DeviceRoute) -> Result<ReportRateInfo, WriteError>;
     /// Apply a report rate to `route` now.
     async fn set_report_rate(route: DeviceRoute, rate: ReportRateHz) -> Result<(), WriteError>;
+    /// Apply native HiResWheel resolution and/or inversion to `route` now.
+    /// `None` preserves the device's current value for that field.
+    async fn set_scroll_wheel_mode(
+        route: DeviceRoute,
+        resolution: Option<ScrollResolution>,
+        inverted: Option<bool>,
+    ) -> Result<(), WriteError>;
 }

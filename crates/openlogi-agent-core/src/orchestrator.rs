@@ -31,9 +31,7 @@ use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::action_ring::ActionRingSessionSpec;
-use crate::capture_plan::{
-    DeviceCapturePlan, SharedCapturePlans, hidpp_side_gesture_maps_for, plan_for_device,
-};
+use crate::capture_plan::{DeviceCapturePlan, SharedCapturePlans, plan_for_device};
 use crate::hardware::DeviceOp;
 use crate::observable::ObservableState;
 use crate::receiver_access::ReceiverAccess;
@@ -148,6 +146,8 @@ pub struct Orchestrator {
     devices: Vec<AgentDevice>,
     current: usize,
     current_app: Option<String>,
+    /// Manual per-device app-profile choice from [`Action::CycleAppProfile`].
+    app_profile_override: HashMap<String, Option<String>>,
     /// The latest inventory snapshot, kept so the IPC server can answer the
     /// GUI's `inventory()` polls without re-enumerating (the agent owns all
     /// device I/O). The enum keeps "nothing checked yet" and "enumeration
@@ -241,6 +241,7 @@ impl Orchestrator {
             devices: Vec::new(),
             current: 0,
             current_app: None,
+            app_profile_override: HashMap::new(),
             inventory: InventoryState::Pending,
             reapply_all_next_refresh: false,
             hid_open_failures: false,
@@ -293,18 +294,10 @@ impl Orchestrator {
         if key.is_some_and(|k| !self.config.device_enabled(k)) {
             return HookMaps::default();
         }
-        let mut bindings = button_bindings_for(&self.config, key, app);
-        let mut gestures = oshook_gestures_for(&self.config, key, app);
-        if let Some(key) = key {
-            for button in hidpp_side_gesture_maps_for(&self.config, key, app).keys() {
-                // HID++ owns both edges for these controls. Keeping their
-                // projected click or gesture map in the global hook would
-                // reintroduce a second, unattributed dispatch path.
-                bindings.remove(button);
-                gestures.remove(button);
-            }
+        HookMaps {
+            bindings: button_bindings_for(&self.config, key, app),
+            gestures: oshook_gestures_for(&self.config, key, app),
         }
-        HookMaps { bindings, gestures }
     }
 
     /// The keyboard key-capture spec for the first known keyboard, or `None`
@@ -326,7 +319,7 @@ impl Orchestrator {
         let bindings = button_bindings_for(
             &self.config,
             Some(&dev.config_key),
-            self.current_app.as_deref(),
+            self.effective_app_for(&dev.config_key),
         );
         let wanted: BTreeMap<u16, _> = KEYBOARD_KEY_CIDS
             .iter()
@@ -352,11 +345,12 @@ impl Orchestrator {
     /// Rewrite every shared map from the current config + selected device.
     fn rebuild(&self) {
         let key = self.current_key();
+        let app = key.and_then(|device_key| self.effective_app_for(device_key));
         // One write publishes both hook maps atomically, so a button press during
         // an owner switch can't observe a half-updated state.
         write_value(
             &self.shared.hook_maps,
-            self.hook_maps_for(key, self.current_app.as_deref()),
+            self.hook_maps_for(key, app),
             "hook_maps",
         );
         self.publish_device_runtime();
@@ -443,7 +437,7 @@ impl Orchestrator {
                     physical_key,
                     &dev.config_key,
                     route,
-                    self.current_app.as_deref(),
+                    self.effective_app_for(&dev.config_key),
                     rearm_generation,
                     self.os_mouse_hook_available,
                 ))
@@ -452,10 +446,6 @@ impl Orchestrator {
     }
 
     /// Publish whether the OS movement hook is currently usable.
-    ///
-    /// HID++ Back/Forward diversion follows this state as a fail-open policy:
-    /// if the mouse-remapping hook is unavailable, side buttons remain native.
-    /// Other HID++-only controls remain captured independently.
     pub fn set_os_mouse_hook_available(&mut self, available: bool) {
         if self.os_mouse_hook_available == available {
             return;
@@ -568,12 +558,13 @@ impl Orchestrator {
         let key = &dev.config_key;
         let route_key = stable_id(dev).route_key();
         let device = self.config.devices.get(key.as_str());
-        let (resolution, inverted) = configured_wheel_mode(&self.config, dev);
-        let dpi = device.and_then(|d| d.effective_dpi(&route_key));
+        let app = self.current_app.as_deref();
+        let (resolution, inverted) = configured_wheel_mode(&self.config, dev, app);
+        let dpi = device.and_then(|d| d.effective_dpi_for_app(&route_key, app));
         let smartshift = device
-            .and_then(|d| d.effective_smartshift(&route_key))
+            .and_then(|d| d.effective_smartshift_for_app(&route_key, app))
             .map(openlogi_hid::SmartShiftStatus::from);
-        let report_rate = device.and_then(|d| d.effective_report_rate(&route_key));
+        let report_rate = device.and_then(|d| d.effective_report_rate_for_app(&route_key, app));
         if resolution.is_some()
             || inverted.is_some()
             || dpi.is_some()
@@ -590,7 +581,7 @@ impl Orchestrator {
             );
         }
         if let Some(lighting) = device
-            .and_then(|d| d.effective_lighting(&route_key))
+            .and_then(|d| d.effective_lighting_for_app(&route_key, app))
             .filter(|l| l.enabled)
         {
             let host = self.shared.lighting.clone();
@@ -697,7 +688,8 @@ impl Orchestrator {
             let Some(route) = dev.route.clone() else {
                 continue;
             };
-            let (resolution, inverted) = configured_wheel_mode(&self.config, dev);
+            let (resolution, inverted) =
+                configured_wheel_mode(&self.config, dev, self.current_app.as_deref());
             crate::hardware::write_scroll_wheel_mode_in_background(
                 self.shared.device(&route),
                 resolution,
@@ -744,7 +736,7 @@ impl Orchestrator {
         if !ring.enabled {
             return None;
         }
-        let layout = ring.effective_layout(self.current_app.as_deref());
+        let layout = ring.effective_layout(self.effective_app_for(key));
         if layout.slots.is_empty() {
             return None;
         }
@@ -830,18 +822,26 @@ impl Orchestrator {
     pub fn set_current_app(&mut self, app: Option<ForegroundApp>) -> bool {
         let id = app.as_ref().map(|app| app.id.clone());
         self.observable.set_foreground(app);
+        self.app_profile_override.clear();
         if id == self.current_app {
             return false;
         }
         self.current_app = id;
         write_value(
             &self.shared.hook_maps,
-            self.hook_maps_for(self.current_key(), self.current_app.as_deref()),
+            self.hook_maps_for(
+                self.current_key(),
+                self.current_key()
+                    .and_then(|key| self.effective_app_for(key)),
+            ),
             "hook_maps",
         );
         // Capture plans are app-scoped (per-app binding overlays); republish
         // them with the keyboard's effective bindings.
         self.publish_device_runtime();
+        for dev in self.devices.iter().filter(|dev| dev.online) {
+            self.reapply_volatile_settings(dev);
+        }
         true
     }
 
@@ -921,7 +921,7 @@ impl Orchestrator {
             };
             let stored = self
                 .config
-                .effective_bindings(&dev.config_key, self.current_app.as_deref());
+                .effective_bindings(&dev.config_key, self.effective_app_for(&dev.config_key));
             if stored.is_empty() {
                 continue;
             }
@@ -956,6 +956,68 @@ impl Orchestrator {
             }
         }
     }
+
+    /// Resolved application profile for `device_key`: a manual cycle override
+    /// when set, otherwise the foreground application.
+    #[must_use]
+    pub fn effective_app_for(&self, device_key: &str) -> Option<&str> {
+        if let Some(app) = self.app_profile_override.get(device_key) {
+            return app.as_deref();
+        }
+        self.current_app.as_deref()
+    }
+
+    /// Advance the saved application-profile scope for `device_key`.
+    pub fn cycle_app_profile(&mut self, device_key: &str) -> bool {
+        let profiles: Vec<Option<String>> = std::iter::once(None)
+            .chain(
+                self.config
+                    .app_profiles(device_key)
+                    .map(|app| Some(app.to_string())),
+            )
+            .collect();
+        if profiles.len() <= 1 {
+            tracing::info!(device_key, "no app profiles configured — cycle ignored");
+            return false;
+        }
+        let current = if let Some(stored) = self.app_profile_override.get(device_key) {
+            stored.clone()
+        } else {
+            self.current_app.clone().filter(|id| {
+                profiles
+                    .iter()
+                    .any(|profile| profile.as_deref() == Some(id.as_str()))
+            })
+        };
+        let idx = profiles
+            .iter()
+            .position(|profile| *profile == current)
+            .unwrap_or(0);
+        let next = profiles[(idx + 1) % profiles.len()].clone();
+        self.app_profile_override
+            .insert(device_key.to_string(), next.clone());
+        tracing::info!(device_key, profile = ?next, "cycled application profile");
+        self.publish_capture_plans();
+        publish_optional_arc_if_changed(&self.keyboard_spec_tx, self.keyboard_spec_for());
+        if self.current_key() == Some(device_key) {
+            write_value(
+                &self.shared.hook_maps,
+                self.hook_maps_for(
+                    Some(device_key),
+                    self.effective_app_for(device_key),
+                ),
+                "hook_maps",
+            );
+        }
+        if let Some(dev) = self
+            .devices
+            .iter()
+            .find(|dev| dev.config_key == device_key && dev.online)
+        {
+            self.reapply_volatile_settings(dev);
+        }
+        true
+    }
 }
 
 /// Resolve the two independently-gated HiResWheel settings for one device.
@@ -963,6 +1025,7 @@ impl Orchestrator {
 fn configured_wheel_mode(
     config: &Config,
     dev: &AgentDevice,
+    app: Option<&str>,
 ) -> (Option<ScrollResolution>, Option<bool>) {
     let Some(capabilities) = dev.capabilities else {
         return (None, None);
@@ -971,11 +1034,11 @@ fn configured_wheel_mode(
     let device = config.devices.get(dev.config_key.as_str());
     let resolution = capabilities
         .hires_wheel
-        .then(|| device.and_then(|d| d.effective_scroll_resolution(&route_key)))
+        .then(|| device.and_then(|d| d.effective_scroll_resolution_for_app(&route_key, app)))
         .flatten();
-    let inverted = capabilities
-        .scroll_inversion
-        .then(|| device.is_some_and(|d| d.effective_invert_scroll(&route_key)));
+    let inverted = capabilities.scroll_inversion.then(|| {
+        device.is_some_and(|d| d.effective_invert_scroll_for_app(&route_key, app))
+    });
     (resolution, inverted)
 }
 

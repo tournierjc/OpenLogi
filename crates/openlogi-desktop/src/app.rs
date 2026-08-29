@@ -159,12 +159,16 @@ impl DetailTab {
     }
 }
 
-/// Binding chrome this view itself rebuilds. Child panels subscribe on their
-/// own; the profile bar (Buttons) and the configuration card (Device) do not.
+/// Profile chrome this view itself rebuilds. Child panels subscribe on their
+/// own; the profile bar and the configuration card (Device) do not.
 fn root_paints_binding_chrome(tab: DetailTab) -> bool {
     matches!(
         tab,
-        DetailTab::Buttons | DetailTab::ActionsRing | DetailTab::Device
+        DetailTab::Buttons
+            | DetailTab::ActionsRing
+            | DetailTab::Pointer
+            | DetailTab::Lighting
+            | DetailTab::Device
     )
 }
 
@@ -279,8 +283,10 @@ impl AppView {
                 }
                 StateEvent::DeviceConfigChanged(key) => {
                     on_home
-                        || (matches!(view.active_tab, DetailTab::Pointer | DetailTab::Device)
-                            && active_key.as_ref() == Some(key))
+                        || (matches!(
+                            view.active_tab,
+                            DetailTab::Pointer | DetailTab::Lighting | DetailTab::Device
+                        ) && active_key.as_ref() == Some(key))
                 }
                 StateEvent::CameraChanged => on_home || view.active_tab == DetailTab::Light,
                 // Child entities own these surfaces and subscribe directly. A
@@ -975,11 +981,12 @@ mod tests {
     }
 
     #[test]
-    fn binding_changes_rebuild_the_buttons_profile_bar() {
+    fn binding_changes_rebuild_profile_chrome_on_profile_tabs() {
         assert!(root_paints_binding_chrome(DetailTab::Buttons));
         assert!(root_paints_binding_chrome(DetailTab::ActionsRing));
+        assert!(root_paints_binding_chrome(DetailTab::Pointer));
+        assert!(root_paints_binding_chrome(DetailTab::Lighting));
         assert!(root_paints_binding_chrome(DetailTab::Device));
-        assert!(!root_paints_binding_chrome(DetailTab::Pointer));
         assert!(!root_paints_binding_chrome(DetailTab::Keys));
     }
 }

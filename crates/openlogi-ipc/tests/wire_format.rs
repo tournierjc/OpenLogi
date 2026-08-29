@@ -102,7 +102,7 @@ fn representative_smartshift_status() -> SmartShiftStatus {
 /// that makes that visible in the same diff.
 #[test]
 fn protocol_version_is_pinned() {
-    assert_eq!(PROTOCOL_VERSION, 34);
+    assert_eq!(PROTOCOL_VERSION, 35);
 }
 
 #[test]
@@ -256,6 +256,17 @@ fn request_variant_order() {
             rate: openlogi_core::hid::ReportRateHz::new(1000),
         },
         "1e0008463030444341464501fbe803",
+    );
+    assert_wire(
+        &AgentRequest::SetScrollWheelMode {
+            route: DeviceRoute::Bolt {
+                receiver_uid: "F00DCAFE".into(),
+                slot: 1,
+            },
+            resolution: Some(openlogi_core::config::ScrollResolution::Low),
+            inverted: Some(true),
+        },
+        "1f000846303044434146450101000101",
     );
 }
 

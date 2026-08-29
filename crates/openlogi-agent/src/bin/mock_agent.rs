@@ -970,6 +970,17 @@ impl Agent for MockAgent {
         Ok(())
     }
 
+    async fn set_scroll_wheel_mode(
+        self,
+        _: Context,
+        route: DeviceRoute,
+        resolution: Option<openlogi_core::config::ScrollResolution>,
+        inverted: Option<bool>,
+    ) -> Result<(), WriteError> {
+        info!(%route, ?resolution, ?inverted, "set_scroll_wheel_mode");
+        Ok(())
+    }
+
     async fn request_accessibility_prompt(self, _: Context) {
         info!("request_accessibility_prompt (no-op in the mock)");
     }
@@ -1142,40 +1153,6 @@ impl Agent for MockAgent {
     }
 }
 
-fn canned_lighting_info(slot: Option<u8>) -> LightingInfo {
-    match slot {
-        Some(MOUSE_SLOT) => LightingInfo {
-            mouse: true,
-            per_key: false,
-            zones: vec![
-                LightingZone {
-                    index: 0,
-                    location: LightingZoneLocation::Primary,
-                    firmware_effects: vec![1, 3, 5, 10],
-                },
-                LightingZone {
-                    index: 1,
-                    location: LightingZoneLocation::Logo,
-                    firmware_effects: vec![1, 3, 5, 10],
-                },
-            ],
-            screen_sampler: true,
-            audio_visualizer: true,
-        },
-        _ => LightingInfo {
-            mouse: false,
-            per_key: true,
-            zones: vec![LightingZone {
-                index: 0,
-                location: LightingZoneLocation::Primary,
-                firmware_effects: vec![1, 3, 4, 5, 6, 10, 11],
-            }],
-            screen_sampler: true,
-            audio_visualizer: true,
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1237,5 +1214,39 @@ mod tests {
             select_first.next_pairing_update(),
             Some(PairingUpdate::Failed(PairingFailure::Cancelled))
         ));
+    }
+}
+
+fn canned_lighting_info(slot: Option<u8>) -> LightingInfo {
+    match slot {
+        Some(MOUSE_SLOT) => LightingInfo {
+            mouse: true,
+            per_key: false,
+            zones: vec![
+                LightingZone {
+                    index: 0,
+                    location: LightingZoneLocation::Primary,
+                    firmware_effects: vec![1, 3, 5, 10],
+                },
+                LightingZone {
+                    index: 1,
+                    location: LightingZoneLocation::Logo,
+                    firmware_effects: vec![1, 3, 5, 10],
+                },
+            ],
+            screen_sampler: true,
+            audio_visualizer: true,
+        },
+        _ => LightingInfo {
+            mouse: false,
+            per_key: true,
+            zones: vec![LightingZone {
+                index: 0,
+                location: LightingZoneLocation::Primary,
+                firmware_effects: vec![1, 3, 4, 5, 6, 10, 11],
+            }],
+            screen_sampler: true,
+            audio_visualizer: true,
+        },
     }
 }

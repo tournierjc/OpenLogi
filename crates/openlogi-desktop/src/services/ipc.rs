@@ -28,6 +28,7 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use openlogi_core::config::Lighting;
+use openlogi_core::config::ScrollResolution;
 use openlogi_core::hid::{
     DeviceRoute, Dpi, DpiInfo, LightCommand, OnboardProfileSnapshot, ReceiverSelector,
     ReportRateHz, ReportRateInfo, SmartShiftStatus, WriteError,
@@ -110,6 +111,7 @@ pub enum Command {
     SetLight(DeviceRoute, LightCommand, String, u64),
     SetLightManualPower(DeviceRoute, bool, String, u64),
     SetSmartShift(DeviceRoute, SmartShiftStatus),
+    SetScrollWheelMode(DeviceRoute, Option<ScrollResolution>, Option<bool>),
     ReadDpi(DeviceRoute, oneshot::Sender<Result<DpiInfo, WriteError>>),
     ReadReportRate(
         DeviceRoute,
@@ -564,6 +566,13 @@ async fn handle(
         }
         Command::SetSmartShift(route, status) => {
             log_apply(client.set_smartshift(ctx, route, status).await)?;
+        }
+        Command::SetScrollWheelMode(route, resolution, inverted) => {
+            log_apply(
+                client
+                    .set_scroll_wheel_mode(ctx, route, resolution, inverted)
+                    .await,
+            )?;
         }
         Command::ReadDpi(route, reply) => {
             let _ = reply.send(rpc_result(client.read_dpi(ctx, route).await)?);

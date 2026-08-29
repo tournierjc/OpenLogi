@@ -2,7 +2,7 @@
 
 use tracing::debug;
 
-use openlogi_core::config::Config;
+use openlogi_core::config::ScrollResolution;
 
 use crate::state::devices::DeviceRecord;
 
@@ -17,8 +17,45 @@ impl AppState {
             record
                 .persistent_config_key()
                 .and_then(|key| self.config.devices.get(key))
-                .is_some_and(|device| device.effective_invert_scroll(&record.route_key))
+                .is_some_and(|device| {
+                    device.effective_invert_scroll_for_app(&record.route_key, self.editing_app())
+                })
         })
+    }
+
+    /// Native wheel resolution and inversion for the open profile scope.
+    /// `None` in either field means that capability is absent or should be left
+    /// unchanged on the device.
+    #[must_use]
+    pub(crate) fn configured_wheel_mode_for_editing(
+        &self,
+    ) -> (Option<ScrollResolution>, Option<bool>) {
+        let Some(record) = self.current_record() else {
+            return (None, None);
+        };
+        let Some(capabilities) = record.capabilities else {
+            return (None, None);
+        };
+        let Some(persistent_key) = record.persistent_config_key() else {
+            return (None, None);
+        };
+        let device = self.config.devices.get(persistent_key);
+        let route_key = &record.route_key;
+        let editing_app = self.editing_app();
+        let resolution = capabilities
+            .hires_wheel
+            .then(|| {
+                device.and_then(|device| {
+                    device.effective_scroll_resolution_for_app(route_key, editing_app)
+                })
+            })
+            .flatten();
+        let inverted = capabilities.scroll_inversion.then(|| {
+            device.is_some_and(|device| {
+                device.effective_invert_scroll_for_app(route_key, editing_app)
+            })
+        });
+        (resolution, inverted)
     }
     /// Whether the active device reports native HID++ wheel inversion support.
     #[must_use]
@@ -43,19 +80,32 @@ impl AppState {
             debug!("no persistent device key — invert-scroll change ignored");
             return;
         };
-        self.config
-            .edit(|config| config.set_invert_scroll(&key, invert));
+        let app = self.editing_app().map(str::to_string);
+        self.config.edit(|config| {
+            if let Some(app) = app {
+                config.devices
+                    .entry(key.clone())
+                    .or_default()
+                    .per_app_settings
+                    .entry(app)
+                    .or_default()
+                    .invert_scroll = Some(invert);
+            } else {
+                config.set_invert_scroll(&key, invert);
+            }
+        });
         self.persist_and_reload("invert scroll");
     }
     /// The active device's persisted wheel resolution, or `None` when OpenLogi
     /// leaves the device default untouched.
     #[must_use]
-    pub fn current_scroll_resolution(&self) -> Option<openlogi_core::config::ScrollResolution> {
+    pub fn current_scroll_resolution(&self) -> Option<ScrollResolution> {
         self.current_record().and_then(|record| {
-            record
-                .persistent_config_key()
-                .and_then(|key| self.config.devices.get(key))
-                .and_then(|device| device.effective_scroll_resolution(&record.route_key))
+            record.persistent_config_key().and_then(|key| {
+                self.config.devices.get(key).and_then(|device| {
+                    device.effective_scroll_resolution_for_app(&record.route_key, self.editing_app())
+                })
+            })
         })
     }
     /// Whether the active device exposes HID++ `0x2121 HiResWheel`.
@@ -91,7 +141,7 @@ impl AppState {
     /// HiResWheel-capable device.
     pub fn commit_scroll_resolution(
         &mut self,
-        resolution: Option<openlogi_core::config::ScrollResolution>,
+        resolution: Option<ScrollResolution>,
     ) {
         let Some((key, supported)) = self.current_record().and_then(|record| {
             let key = record.persistent_config_key()?.to_string();
@@ -105,10 +155,25 @@ impl AppState {
             debug!("no persistent device key — wheel-resolution change ignored");
             return;
         };
-        if !self
-            .config
-            .edit(|config| set_scroll_resolution_if_supported(config, &key, supported, resolution))
-        {
+        let app = self.editing_app().map(str::to_string);
+        let changed = self.config.edit(|config| {
+            if !supported {
+                return false;
+            }
+            if let Some(app) = app {
+                config.devices
+                    .entry(key.clone())
+                    .or_default()
+                    .per_app_settings
+                    .entry(app)
+                    .or_default()
+                    .scroll_resolution = resolution;
+            } else {
+                config.set_scroll_resolution(&key, resolution);
+            }
+            true
+        });
+        if !changed {
             debug!("active device does not support HiResWheel");
             return;
         }
@@ -116,11 +181,12 @@ impl AppState {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn set_scroll_resolution_if_supported(
-    config: &mut Config,
+    config: &mut openlogi_core::config::Config,
     key: &str,
     supported: bool,
-    resolution: Option<openlogi_core::config::ScrollResolution>,
+    resolution: Option<ScrollResolution>,
 ) -> bool {
     if !supported {
         return false;

@@ -120,6 +120,7 @@ impl DeviceReads {
         );
     }
 
+
     /// Start the report-rate query unless the same device route is already subscribed.
     pub(crate) fn ensure_report_rate(
         &mut self,

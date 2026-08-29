@@ -28,7 +28,7 @@ use openlogi_hid::{
     ScrollResolution, SharedChannel, SmartShiftStatus, WriteError,
 };
 use tokio::time::error::Elapsed;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::receiver_access::ReceiverAccess;
 
@@ -254,6 +254,37 @@ pub fn toggle_smartshift_in_background(
             Err(_) => warn!(
                 index,
                 "SmartShift toggle timed out (device asleep/unresponsive)"
+            ),
+        },
+    );
+}
+
+/// Spawn an OS thread that advances the active onboard flash profile on the
+/// device at `target`.
+pub fn cycle_onboard_profile_in_background(
+    capture: &CaptureChannel,
+    registry: &ChannelRegistry,
+    receiver_access: &ReceiverAccess,
+    device_io: &DeviceIoGate,
+    target: Option<DeviceRoute>,
+) {
+    let Some(target) = target else {
+        debug!("no target device — onboard profile cycle skipped");
+        return;
+    };
+    let index = target.device_index();
+    DeviceOp::new(capture, registry, receiver_access, device_io, &target).spawn_write(
+        "onboard profile cycle",
+        |shared| async move { openlogi_hid::cycle_onboard_profile_on(&shared).await },
+        move |result| match result {
+            Ok(Ok(profile)) => info!(index, profile, "onboard profile cycled"),
+            Ok(Err(WriteError::FeatureUnsupported { .. })) => {
+                debug!(index, "onboard profile cycle unsupported");
+            }
+            Ok(Err(error)) => warn!(error = ?error, index, "onboard profile cycle failed"),
+            Err(_) => warn!(
+                index,
+                "onboard profile cycle timed out (device asleep/unresponsive)"
             ),
         },
     );

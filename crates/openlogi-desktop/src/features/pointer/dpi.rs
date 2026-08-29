@@ -61,9 +61,11 @@ impl DpiPanel {
             |_panel, _, event: &StateEvent, cx| {
                 let relevant = match event {
                     StateEvent::InventoryChanged | StateEvent::DeviceSelected(_) => true,
-                    StateEvent::DpiChanged(key) => AppState::try_read(cx)
-                        .and_then(AppState::current_record)
-                        .is_some_and(|record| record.device_key() == *key),
+                    StateEvent::BindingsChanged(key) | StateEvent::DpiChanged(key) => {
+                        AppState::try_read(cx)
+                            .and_then(AppState::current_record)
+                            .is_some_and(|record| record.device_key() == *key)
+                    }
                     _ => false,
                 };
                 if relevant {
