@@ -9,13 +9,13 @@
 //! target up front so views can switch instantly when the active device
 //! changes — no synchronous I/O during the device switch.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use gpui::{App, Context, Entity, EventEmitter, Global};
 use openlogi_core::app::ForegroundApp;
 use openlogi_core::config::Config;
 use openlogi_core::device::{DeviceInventory, StandaloneDevice};
-use openlogi_core::hid::{Dpi, SmartShiftStatus};
+use openlogi_core::hid::{Dpi, OnboardLed, SmartShiftStatus};
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -174,6 +174,11 @@ pub struct AppState {
     lighting: LightingState,
     /// Sender to the IPC client thread. The agent owns the hook and device I/O.
     ipc_commands: mpsc::UnboundedSender<crate::services::ipc::Command>,
+    /// Devices whose onboard firmware map was already fetched this session.
+    onboard_import_attempted: BTreeSet<DeviceKey>,
+    /// Onboard LED records last read from firmware, used when no lighting
+    /// config has been saved yet.
+    onboard_leds: BTreeMap<DeviceKey, Vec<OnboardLed>>,
     /// Camera-consent poll started by an in-app macOS prompt. The app-state
     /// entity owns it because permission can resolve after the initiating view
     /// or window closes; dropping the entity at process shutdown cancels it.
@@ -215,6 +220,7 @@ impl AppState {
             state.load_current_dpi(cx);
             state.load_current_smartshift(cx);
             state.confirm_current_smartshift(cx);
+            state.load_onboard_bindings(cx);
         });
     }
 
@@ -271,6 +277,8 @@ impl AppState {
             pointer: PointerState::default(),
             lighting: LightingState::default(),
             ipc_commands,
+            onboard_import_attempted: BTreeSet::new(),
+            onboard_leds: BTreeMap::new(),
             #[cfg(target_os = "macos")]
             camera_permission_poll: None,
         };

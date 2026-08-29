@@ -53,7 +53,12 @@ impl KeyboardUsage {
             0x36 => ",".to_string(),
             0x37 => ".".to_string(),
             0x38 => "/".to_string(),
+            0x39 => "CapsLock".to_string(),
             0x3a..=0x45 => format!("F{}", code - 0x3a + 1),
+            0x46 => "PrintScreen".to_string(),
+            0x47 => "ScrollLock".to_string(),
+            0x48 => "Pause".to_string(),
+            0x49 => "Insert".to_string(),
             0x4a => "Home".to_string(),
             0x4b => "PageUp".to_string(),
             0x4c => "Delete".to_string(),
@@ -63,6 +68,17 @@ impl KeyboardUsage {
             0x50 => "Left".to_string(),
             0x51 => "Down".to_string(),
             0x52 => "Up".to_string(),
+            0x53 => "NumLock".to_string(),
+            0x54 => "KpDivide".to_string(),
+            0x55 => "KpMultiply".to_string(),
+            0x56 => "KpMinus".to_string(),
+            0x57 => "KpPlus".to_string(),
+            0x58 => "KpEnter".to_string(),
+            0x59..=0x61 => format!("Kp{}", code - 0x59 + 1),
+            0x62 => "Kp0".to_string(),
+            0x63 => "KpDecimal".to_string(),
+            0x65 => "Menu".to_string(),
+            0x67 => "KpEquals".to_string(),
             0x68..=0x6f => format!("F{}", code - 0x68 + 13),
             _ => format!("Usage 0x{code:02X}"),
         }
@@ -80,8 +96,8 @@ pub struct KeyboardUsageError(pub u8);
 )]
 const fn validate_keyboard_usage(value: &u8) -> Result<(), KeyboardUsageError> {
     if matches!(
-        value,
-        0x04..=0x31 | 0x33..=0x38 | 0x3a..=0x45 | 0x4a..=0x52 | 0x68..=0x6f
+        *value,
+        0x04..=0x31 | 0x33..=0x63 | 0x65 | 0x67..=0x6f
     ) {
         Ok(())
     } else {
@@ -161,6 +177,32 @@ impl<'de> Deserialize<'de> for KeyCombo {
 }
 
 impl KeyCombo {
+    /// Build a chord from a HID keyboard report's modifier bitmap and usage ID.
+    ///
+    /// Left and right HID modifiers collapse into OpenLogi's four modifier
+    /// bits. Returns `None` when `usage` is not a [`KeyboardUsage`] we persist.
+    #[must_use]
+    pub fn from_hid_report(modifiers: u8, usage: u8) -> Option<Self> {
+        let key = KeyboardUsage::try_from(usage).ok()?;
+        let mut bits = 0u8;
+        if modifiers & (0x01 | 0x10) != 0 {
+            bits |= MOD_CONTROL;
+        }
+        if modifiers & (0x02 | 0x20) != 0 {
+            bits |= MOD_SHIFT;
+        }
+        if modifiers & (0x04 | 0x40) != 0 {
+            bits |= MOD_OPTION;
+        }
+        if modifiers & (0x08 | 0x80) != 0 {
+            bits |= MOD_COMMAND;
+        }
+        Some(Self {
+            modifiers: bits,
+            key,
+        })
+    }
+
     /// USB HID keyboard usage for the ordinary key.
     #[must_use]
     pub const fn key(&self) -> KeyboardUsage {
@@ -304,6 +346,15 @@ fn parse_key(token: &str) -> Result<KeyboardUsage, KeyComboParseError> {
             13..=20 => 0x68 + number - 13,
             _ => return Err(KeyComboParseError::UnknownToken(token.to_string())),
         }
+    } else if let Some(number) = lowercase
+        .strip_prefix("kp")
+        .and_then(|number| number.parse::<u8>().ok())
+    {
+        match number {
+            0 => 0x62,
+            1..=9 => 0x59 + number - 1,
+            _ => return Err(KeyComboParseError::UnknownToken(token.to_string())),
+        }
     } else {
         match lowercase.as_str() {
             "enter" | "return" => 0x28,
@@ -311,6 +362,11 @@ fn parse_key(token: &str) -> Result<KeyboardUsage, KeyComboParseError> {
             "backspace" => 0x2a,
             "tab" => 0x2b,
             "space" => 0x2c,
+            "capslock" | "caps" => 0x39,
+            "printscreen" | "print-screen" => 0x46,
+            "scrolllock" | "scroll-lock" => 0x47,
+            "pause" => 0x48,
+            "insert" | "ins" => 0x49,
             "home" => 0x4a,
             "pageup" | "page-up" => 0x4b,
             "delete" => 0x4c,
@@ -320,6 +376,15 @@ fn parse_key(token: &str) -> Result<KeyboardUsage, KeyComboParseError> {
             "left" => 0x50,
             "down" => 0x51,
             "up" => 0x52,
+            "numlock" | "num-lock" => 0x53,
+            "kpdivide" | "kp-divide" => 0x54,
+            "kpmultiply" | "kp-multiply" => 0x55,
+            "kpminus" | "kp-minus" => 0x56,
+            "kpplus" | "kp-plus" => 0x57,
+            "kpenter" | "kp-enter" => 0x58,
+            "kpdecimal" | "kp-decimal" => 0x63,
+            "menu" => 0x65,
+            "kpequals" | "kp-equals" => 0x67,
             _ => return Err(KeyComboParseError::UnknownToken(token.to_string())),
         }
     };
@@ -354,6 +419,21 @@ mod tests {
         let combo = "Cmd+A".parse::<KeyCombo>().expect("valid shortcut failed");
         assert_eq!(combo.key().code(), 0x04);
         assert_eq!(combo.rendered_label(), "Cmd+A");
+    }
+
+    #[test]
+    fn hid_report_collapses_left_and_right_modifiers() {
+        let combo = KeyCombo::from_hid_report(0x01 | 0x20 | 0x80, 0x04)
+            .expect("0x04 is a valid keyboard usage");
+        assert!(combo.has_control());
+        assert!(combo.has_shift());
+        assert!(combo.has_command());
+        assert!(!combo.has_option());
+        assert_eq!(combo.key().code(), 0x04);
+        assert!(KeyCombo::from_hid_report(0, 0xff).is_none());
+        let plus = KeyCombo::from_hid_report(0, 0x57).expect("keypad plus is a valid usage");
+        assert_eq!(plus.rendered_label(), "KpPlus");
+        assert_eq!("KpPlus".parse::<KeyCombo>(), Ok(plus));
     }
 
     #[test]

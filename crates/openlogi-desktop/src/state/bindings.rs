@@ -2,10 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use gpui::App;
+use gpui::{App, Context};
 use openlogi_core::binding::{Action, Binding, ButtonId, GestureDirection};
 use openlogi_core::bindings::{bindings_for, hidpp_gesture_maps_for, oshook_gestures_for};
 use openlogi_core::config::{Config, KeyTrigger};
+use openlogi_core::hid::{Dpi, OnboardProfileSnapshot};
 use tracing::debug;
 
 use crate::features::mouse::thumbwheel::{ThumbwheelPair, ThumbwheelPreset};
@@ -175,6 +176,141 @@ impl AppState {
         self.bindings.refresh_device(&self.config, key.as_deref());
     }
 
+    /// Pull the active onboard-profile button table into config so the Buttons
+    /// tab shows the map already on the mouse. Existing stored keys are kept;
+    /// only slots that have never been saved are filled.
+    pub(super) fn load_onboard_bindings(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.current_record() else {
+            return;
+        };
+        if !record
+            .capabilities
+            .is_some_and(|capabilities| capabilities.buttons)
+        {
+            return;
+        }
+        let Some(route) = record.route.clone() else {
+            return;
+        };
+        let Some(persistent_key) = record.persistent_config_key().map(str::to_string) else {
+            return;
+        };
+        let key = record.device_key();
+        if !self.onboard_import_attempted.insert(key.clone()) {
+            return;
+        }
+        let commands = self.ipc_sender();
+        cx.spawn(async move |this, cx| {
+            let (reply, result) = tokio::sync::oneshot::channel();
+            if commands
+                .send(crate::services::ipc::Command::ReadOnboardProfile(
+                    route, reply,
+                ))
+                .is_err()
+            {
+                return;
+            }
+            let Ok(reply) = result.await else {
+                return;
+            };
+            this.update(cx, |state, cx| {
+                let Ok(snapshot) = reply else {
+                    return;
+                };
+                state.apply_onboard_profile(&persistent_key, key, snapshot, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn apply_onboard_profile(
+        &mut self,
+        persistent_key: &str,
+        key: super::DeviceKey,
+        snapshot: OnboardProfileSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        let OnboardProfileSnapshot {
+            bindings,
+            dpi_presets,
+            leds,
+        } = snapshot;
+        self.onboard_leds.insert(key.clone(), leds);
+        cx.emit(StateEvent::LightingChanged(key.clone()));
+        let imported_bindings = self.import_onboard_bindings(persistent_key, bindings);
+        let imported_dpi = self.import_onboard_dpi_presets(persistent_key, dpi_presets);
+        if (imported_bindings || imported_dpi) && !self.persist_and_reload("onboard profile") {
+            return;
+        }
+        if imported_bindings {
+            cx.emit(StateEvent::BindingsChanged(key.clone()));
+        }
+        if imported_dpi {
+            cx.emit(StateEvent::DpiChanged(key));
+        }
+    }
+
+    fn import_onboard_bindings(
+        &mut self,
+        persistent_key: &str,
+        bindings: BTreeMap<ButtonId, Action>,
+    ) -> bool {
+        if bindings.is_empty() {
+            return false;
+        }
+        let Some(current) = self
+            .current_record()
+            .and_then(DeviceRecord::persistent_config_key)
+        else {
+            return false;
+        };
+        if current != persistent_key {
+            return false;
+        }
+        let stored = self.config.bindings_for(persistent_key);
+        let missing: Vec<_> = bindings
+            .into_iter()
+            .filter(|(button, _)| !stored.contains_key(button))
+            .collect();
+        if missing.is_empty() {
+            return false;
+        }
+        debug!(
+            count = missing.len(),
+            "imported missing onboard button bindings"
+        );
+        self.config.edit(|config| {
+            for (button, action) in missing {
+                config.set_binding(persistent_key, button, Binding::Single(action));
+            }
+        });
+        self.refresh_binding_projections();
+        true
+    }
+
+    fn import_onboard_dpi_presets(&mut self, persistent_key: &str, presets: Vec<Dpi>) -> bool {
+        if presets.is_empty() {
+            return false;
+        }
+        let Some(current) = self
+            .current_record()
+            .and_then(DeviceRecord::persistent_config_key)
+        else {
+            return false;
+        };
+        if current != persistent_key {
+            return false;
+        }
+        if !self.config.dpi_presets(persistent_key).is_empty() {
+            return false;
+        }
+        debug!(count = presets.len(), "imported onboard DPI presets");
+        self.config
+            .edit(|config| config.set_dpi_presets(persistent_key, presets));
+        true
+    }
+
     pub(super) fn restore_binding_projections(&mut self) {
         let key = self
             .current_record()
@@ -258,9 +394,10 @@ impl AppState {
         self.persist_and_reload("per-app binding");
     }
 
-    /// Delete the open per-app profile outright and fall back to editing the
-    /// device's global bindings.
-    pub fn remove_editing_app_profile(&mut self) {
+    /// Delete `app`'s profile for the active device. If that profile is the
+    /// one this window has open, fall back to editing the device's global
+    /// bindings.
+    pub fn remove_app_profile(&mut self, app: &str) {
         let Some(key) = self
             .current_record()
             .and_then(DeviceRecord::persistent_config_key)
@@ -268,12 +405,11 @@ impl AppState {
         else {
             return;
         };
-        let Some(app) = self.editing_app().map(str::to_string) else {
-            return;
-        };
         self.config
-            .edit(|config| config.remove_app_profile(&key, &app));
-        self.set_editing_app(None);
+            .edit(|config| config.remove_app_profile(&key, app));
+        if self.editing_app() == Some(app) {
+            self.set_editing_app(None);
+        }
         self.persist_and_reload("per-app profile");
     }
 
