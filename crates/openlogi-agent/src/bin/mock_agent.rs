@@ -1126,6 +1126,20 @@ impl Agent for MockAgent {
             feature_hex: 0x8100,
         })
     }
+
+    async fn read_lighting_info(
+        self,
+        _: Context,
+        route: DeviceRoute,
+    ) -> Result<LightingInfo, WriteError> {
+        let state = self.state.lock().await;
+        if !state.settings_for(&route)?.lighting {
+            return Err(WriteError::FeatureUnsupported {
+                feature_hex: 0x8070,
+            });
+        }
+        Ok(canned_lighting_info(settings_key(&route)))
+    }
 }
 
 #[cfg(test)]
@@ -1189,20 +1203,6 @@ mod tests {
             select_first.next_pairing_update(),
             Some(PairingUpdate::Failed(PairingFailure::Cancelled))
         ));
-    }
-
-    async fn read_lighting_info(
-        self,
-        _: Context,
-        route: DeviceRoute,
-    ) -> Result<LightingInfo, WriteError> {
-        let state = self.state.lock().await;
-        if !state.settings_for(&route)?.lighting {
-            return Err(WriteError::FeatureUnsupported {
-                feature_hex: 0x8070,
-            });
-        }
-        Ok(canned_lighting_info(settings_key(&route)))
     }
 }
 

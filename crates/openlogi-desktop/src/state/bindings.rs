@@ -423,6 +423,10 @@ impl AppState {
 
     /// Delete the open per-app profile outright and fall back to editing the
     /// device's global bindings.
+    #[expect(
+        dead_code,
+        reason = "profile dialogs capture the device key up front; kept for direct callers"
+    )]
     pub fn remove_editing_app_profile(&mut self) {
         let Some(key) = self
             .current_record()

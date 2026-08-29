@@ -10,7 +10,8 @@ use std::rc::Rc;
 use gpui::{App, Entity, ParentElement, Styled, Window, div};
 use gpui_component::{WindowExt as _, button::ButtonVariant, dialog::DialogButtonProps, h_flex};
 use openlogi_core::binding::{ActionRingConfig, ActionRingLayout, ActionRingSlot};
-use openlogi_core::device::DeviceKey;
+
+use crate::state::DeviceKey;
 
 pub(crate) use self::catalog::{AppCatalogPicker, ProfileIconCache};
 use self::shell::ProfileScopeShell;
@@ -326,6 +327,7 @@ fn open_button_remove_confirmation(window: &mut Window, cx: &mut App, profile: &
             )
             .on_ok({
                 let device_key = device_key.clone();
+                let app = app.clone();
                 move |_event, _window, cx| {
                     let event_key = DeviceKey::from(device_key.as_str());
                     AppState::update(cx, |state, cx| {
