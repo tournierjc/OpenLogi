@@ -24,7 +24,7 @@ mod settings;
 mod tests;
 
 pub use crate::hid::LightingEffect;
-pub use device::{DeviceConfig, DeviceIdentity, LinkConfig, LinkOverrides};
+pub use device::{DeviceConfig, DeviceIdentity, LinkConfig, LinkOverrides, PerAppDeviceSettings};
 #[cfg(feature = "fs")]
 pub use file::{ConfigError, ConfigFile};
 #[cfg(all(test, feature = "fs"))]
@@ -595,20 +595,56 @@ impl Config {
             .filter(|overrides| !overrides.is_empty())
     }
 
-    /// Every application key `device_key` has a profile for, in key order.
-    pub fn app_profiles(&self, device_key: &str) -> impl Iterator<Item = &str> {
-        self.devices
-            .get(device_key)
-            .into_iter()
-            .flat_map(|device| device.per_app_bindings.keys().map(String::as_str))
-    }
-
     /// Drop `device_key`'s whole profile for `app`. Nothing happens when there
     /// is none.
     pub fn remove_app_profile(&mut self, device_key: &str, app: &str) {
         if let Some(device) = self.devices.get_mut(device_key) {
             device.per_app_bindings.remove(app);
+            device.action_ring.per_app.remove(app);
+            device.per_app_settings.remove(app);
         }
+    }
+
+    /// Every application key `device_key` has any saved profile for, in key order.
+    pub fn app_profiles(&self, device_key: &str) -> impl Iterator<Item = &str> {
+        use std::collections::BTreeSet;
+
+        let Some(device) = self.devices.get(device_key) else {
+            return BTreeSet::new().into_iter();
+        };
+        let keys = device
+            .per_app_bindings
+            .keys()
+            .chain(device.action_ring.per_app.keys())
+            .chain(device.per_app_settings.keys())
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        keys.into_iter()
+    }
+
+    /// Count every override group stored for one application profile.
+    #[must_use]
+    pub fn app_profile_override_count(&self, device_key: &str, app: &str) -> usize {
+        let Some(device) = self.devices.get(device_key) else {
+            return 0;
+        };
+        let bindings = device
+            .per_app_bindings
+            .get(app)
+            .map(BTreeMap::len)
+            .unwrap_or(0);
+        let ring = device
+            .action_ring
+            .per_app
+            .get(app)
+            .map(|layout| device.action_ring.layout_override_count(layout))
+            .unwrap_or(0);
+        let settings = device
+            .per_app_settings
+            .get(app)
+            .map(PerAppDeviceSettings::override_count)
+            .unwrap_or(0);
+        bindings + ring + settings
     }
 
     /// Actions Ring settings for `device_key`, falling back to defaults when
@@ -743,15 +779,11 @@ impl Config {
             .custom_name = custom_name;
     }
 
-    /// Whether `device_key` has a non-empty per-app binding overlay for the
-    /// foreground app `app` (bundle id). Drives the menu-bar popover's "override
-    /// active" badge — when the current app has its own bindings for this
-    /// device, the global bindings are (partly) overridden.
+    /// Whether `device_key` has any saved per-app profile for `app` (bindings,
+    /// Actions Ring layout, pointer/lighting settings, …).
     #[must_use]
     pub fn has_app_override(&self, device_key: &str, app: &str) -> bool {
-        self.devices.get(device_key).is_some_and(|d| {
-            app_overlay(&d.per_app_bindings, app).is_some_and(|overlay| !overlay.is_empty())
-        })
+        self.app_profile_override_count(device_key, app) > 0
     }
 
     /// Iterate every device we've recorded an identity for, as

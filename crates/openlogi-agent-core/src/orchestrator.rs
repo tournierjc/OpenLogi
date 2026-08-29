@@ -546,12 +546,13 @@ impl Orchestrator {
         let key = &dev.config_key;
         let route_key = stable_id(dev).route_key();
         let device = self.config.devices.get(key.as_str());
-        let (resolution, inverted) = configured_wheel_mode(&self.config, dev);
-        let dpi = device.and_then(|d| d.effective_dpi(&route_key));
+        let app = self.current_app.as_deref();
+        let (resolution, inverted) = configured_wheel_mode(&self.config, dev, app);
+        let dpi = device.and_then(|d| d.effective_dpi_for_app(&route_key, app));
         let smartshift = device
-            .and_then(|d| d.effective_smartshift(&route_key))
+            .and_then(|d| d.effective_smartshift_for_app(&route_key, app))
             .map(openlogi_hid::SmartShiftStatus::from);
-        let report_rate = device.and_then(|d| d.effective_report_rate(&route_key));
+        let report_rate = device.and_then(|d| d.effective_report_rate_for_app(&route_key, app));
         if resolution.is_some()
             || inverted.is_some()
             || dpi.is_some()
@@ -568,7 +569,7 @@ impl Orchestrator {
             );
         }
         if let Some(lighting) = device
-            .and_then(|d| d.effective_lighting(&route_key))
+            .and_then(|d| d.effective_lighting_for_app(&route_key, app))
             .filter(|l| l.enabled)
         {
             let host = self.shared.lighting.clone();
@@ -665,7 +666,8 @@ impl Orchestrator {
             let Some(route) = dev.route.clone() else {
                 continue;
             };
-            let (resolution, inverted) = configured_wheel_mode(&self.config, dev);
+            let (resolution, inverted) =
+                configured_wheel_mode(&self.config, dev, self.current_app.as_deref());
             crate::hardware::write_scroll_wheel_mode_in_background(
                 self.shared.device(&route),
                 resolution,
@@ -815,6 +817,9 @@ impl Orchestrator {
         // Capture plans are app-scoped (per-app binding overlays); republish
         // them with the keyboard's effective bindings.
         self.publish_device_runtime();
+        for dev in self.devices.iter().filter(|dev| dev.online) {
+            self.reapply_volatile_settings(dev);
+        }
         true
     }
 
@@ -993,6 +998,7 @@ impl Orchestrator {
 fn configured_wheel_mode(
     config: &Config,
     dev: &AgentDevice,
+    app: Option<&str>,
 ) -> (Option<ScrollResolution>, Option<bool>) {
     let Some(capabilities) = dev.capabilities else {
         return (None, None);
@@ -1001,11 +1007,11 @@ fn configured_wheel_mode(
     let device = config.devices.get(dev.config_key.as_str());
     let resolution = capabilities
         .hires_wheel
-        .then(|| device.and_then(|d| d.effective_scroll_resolution(&route_key)))
+        .then(|| device.and_then(|d| d.effective_scroll_resolution_for_app(&route_key, app)))
         .flatten();
-    let inverted = capabilities
-        .scroll_inversion
-        .then(|| device.is_some_and(|d| d.effective_invert_scroll(&route_key)));
+    let inverted = capabilities.scroll_inversion.then(|| {
+        device.is_some_and(|d| d.effective_invert_scroll_for_app(&route_key, app))
+    });
     (resolution, inverted)
 }
 

@@ -372,6 +372,39 @@ impl Agent for AgentServer {
             .await
     }
 
+    async fn set_scroll_wheel_mode(
+        self,
+        _: Context,
+        route: DeviceRoute,
+        resolution: Option<openlogi_core::config::ScrollResolution>,
+        inverted: Option<bool>,
+    ) -> Result<(), WriteError> {
+        self.shared
+            .device(&route)
+            .run(HidppOperation::WriteWheelMode, |c| async move {
+                match (resolution, inverted) {
+                    (Some(resolution), Some(inverted)) => openlogi_hid::set_scroll_wheel_mode_on(
+                        &c,
+                        resolution,
+                        inverted,
+                    )
+                    .await
+                    .map(|_| ()),
+                    (Some(resolution), None) => openlogi_hid::set_scroll_resolution_on(
+                        &c,
+                        resolution,
+                    )
+                    .await
+                    .map(|_| ()),
+                    (None, Some(inverted)) => {
+                        openlogi_hid::set_scroll_inversion_on(&c, inverted).await
+                    }
+                    (None, None) => Ok(()),
+                }
+            })
+            .await
+    }
+
     async fn action_ring_hover(
         self,
         _: Context,

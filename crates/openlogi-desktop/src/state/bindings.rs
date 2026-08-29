@@ -6,10 +6,11 @@ use gpui::{App, Context};
 use openlogi_core::binding::{Action, Binding, ButtonId, GestureDirection};
 use openlogi_core::bindings::{bindings_for, hidpp_gesture_maps_for, oshook_gestures_for};
 use openlogi_core::config::{Config, KeyTrigger};
-use openlogi_core::hid::{Dpi, OnboardProfileSnapshot};
+use openlogi_core::hid::{Dpi, OnboardProfileSnapshot, SmartShiftStatus};
 use tracing::debug;
 
 use crate::features::mouse::thumbwheel::{ThumbwheelPair, ThumbwheelPreset};
+use crate::features::profiles::friendly_app_name;
 use crate::state::devices::DeviceRecord;
 
 use super::{AppState, StateEvent};
@@ -142,6 +143,16 @@ impl AppState {
         )
     }
 
+    /// Human-readable name of the profile scope open in the editors.
+    #[must_use]
+    pub fn editing_profile_display_name(&self) -> Option<String> {
+        self.editing_app().map(|app| {
+            self.recent_app_name(app)
+                .map(str::to_string)
+                .unwrap_or_else(|| friendly_app_name(app))
+        })
+    }
+
     /// Edit `app`'s profile for the active device, or its global profile with
     /// `None`. Re-derives the editor projections without persisting this
     /// window-local choice.
@@ -152,6 +163,88 @@ impl AppState {
             .map(str::to_string);
         self.bindings
             .set_editing_app(&self.config, key.as_deref(), app);
+        self.apply_editing_profile_volatile_settings();
+    }
+
+    /// Re-seat pointer/lighting editor values and push them to the device for
+    /// the profile scope the binding panels are editing. Profile tabs are a
+    /// preview of that scope's saved settings, not the live foreground app.
+    fn apply_editing_profile_volatile_settings(&mut self) {
+        let snapshot = {
+            let Some(record) = self.current_record() else {
+                return;
+            };
+            let Some(persistent_key) = record.persistent_config_key() else {
+                return;
+            };
+            let Some(device) = self.config.devices.get(persistent_key) else {
+                return;
+            };
+            let editing_app = self.editing_app();
+            let route_key = record.route_key.as_str();
+            let device_key = record.device_key();
+            (
+                device_key,
+                record.route.clone(),
+                device
+                    .effective_dpi_for_app(route_key, editing_app)
+                    .map(|dpi| self.normalize_active_dpi(dpi))
+                    .unwrap_or_else(|| self.dpi_for_current()),
+                device
+                    .effective_report_rate_for_app(route_key, editing_app)
+                    .map(|rate| self.normalize_active_report_rate(rate))
+                    .unwrap_or_else(|| self.report_rate_for_current()),
+                device
+                    .effective_smartshift_for_app(route_key, editing_app)
+                    .map(SmartShiftStatus::from)
+                    .or_else(|| self.current_smartshift_ready()),
+                device
+                    .effective_lighting_for_app(route_key, editing_app)
+                    .cloned(),
+                self.configured_wheel_mode_for_editing(),
+            )
+        };
+
+        let (
+            device_key,
+            route,
+            dpi,
+            rate,
+            smartshift,
+            lighting,
+            (scroll_resolution, invert_scroll),
+        ) = snapshot;
+
+        self.pointer.dpi = dpi;
+        self.pointer.report_rate = rate;
+        if let Some(status) = smartshift {
+            self.pointer.reads.set_smartshift_ready(&device_key, status);
+        }
+
+        let Some(route) = route else {
+            return;
+        };
+        self.send_ipc(crate::services::ipc::Command::SetDpi(route.clone(), dpi));
+        self.send_ipc(crate::services::ipc::Command::SetReportRate(route.clone(), rate));
+        if let Some(status) = smartshift {
+            self.send_ipc(crate::services::ipc::Command::SetSmartShift(
+                route.clone(),
+                status,
+            ));
+        }
+        if let Some(lighting) = lighting {
+            self.send_ipc(crate::services::ipc::Command::SetLighting(
+                route.clone(),
+                lighting,
+            ));
+        }
+        if scroll_resolution.is_some() || invert_scroll.is_some() {
+            self.send_ipc(crate::services::ipc::Command::SetScrollWheelMode(
+                route,
+                scroll_resolution,
+                invert_scroll,
+            ));
+        }
     }
 
     /// The hotspot most recently armed in the mouse editor.

@@ -331,6 +331,15 @@ impl ActionRingConfig {
             .cloned()
             .unwrap_or_else(|| self.default.clone())
     }
+
+    /// Count slots that differ from the default layout.
+    #[must_use]
+    pub fn layout_override_count(&self, layout: &ActionRingLayout) -> usize {
+        ActionRingSlot::ALL
+            .iter()
+            .filter(|slot| layout.slots.get(slot) != self.default.slots.get(slot))
+            .count()
+    }
 }
 
 const fn default_true() -> bool {

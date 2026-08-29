@@ -348,7 +348,7 @@ fn configured_wheel_mode_gates_resolution_and_inversion_independently() {
         ..Capabilities::default()
     });
     assert_eq!(
-        configured_wheel_mode(&config, &device),
+        configured_wheel_mode(&config, &device, None),
         (Some(ScrollResolution::Low), None)
     );
 
@@ -357,10 +357,10 @@ fn configured_wheel_mode_gates_resolution_and_inversion_independently() {
         scroll_inversion: true,
         ..Capabilities::default()
     });
-    assert_eq!(configured_wheel_mode(&config, &device), (None, Some(true)));
+    assert_eq!(configured_wheel_mode(&config, &device, None), (None, Some(true)));
 
     device.capabilities = None;
-    assert_eq!(configured_wheel_mode(&config, &device), (None, None));
+    assert_eq!(configured_wheel_mode(&config, &device, None), (None, None));
 }
 
 #[test]
@@ -373,7 +373,7 @@ fn configured_wheel_mode_leaves_unset_resolution_unmanaged() {
         ..Capabilities::default()
     });
 
-    assert_eq!(configured_wheel_mode(&config, &device), (None, None));
+    assert_eq!(configured_wheel_mode(&config, &device, None), (None, None));
 }
 
 #[test]

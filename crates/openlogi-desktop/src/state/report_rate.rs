@@ -83,8 +83,20 @@ impl AppState {
         let persistent_key = record.persistent_config_key().map(str::to_string);
         let route = record.route.clone();
         if let Some(persistent_key) = persistent_key {
-            self.config
-                .edit(|config| config.set_report_rate(&persistent_key, rate));
+            if let Some(app) = self.editing_app().map(str::to_string) {
+                self.config.edit(|config| {
+                    config.devices
+                        .entry(persistent_key.clone())
+                        .or_default()
+                        .per_app_settings
+                        .entry(app)
+                        .or_default()
+                        .report_rate = Some(rate);
+                });
+            } else {
+                self.config
+                    .edit(|config| config.set_report_rate(&persistent_key, rate));
+            }
             if !self.persist_and_reload("report rate") {
                 return;
             }

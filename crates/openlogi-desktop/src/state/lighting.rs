@@ -16,7 +16,11 @@ impl AppState {
         self.current_record()
             .and_then(|record| {
                 let key = record.persistent_config_key()?;
-                self.lighting_for(key, &record.route_key)
+                self.config.devices.get(key).and_then(|device| {
+                    device
+                        .effective_lighting_for_app(&record.route_key, self.editing_app())
+                        .cloned()
+                })
             })
             .or_else(|| self.onboard_led().map(lighting_from_onboard))
             .unwrap_or_default()
@@ -92,9 +96,22 @@ impl AppState {
         };
         let key = record.persistent_config_key().map(str::to_string);
         let target = record.route.clone();
+        let app = self.editing_app().map(str::to_string);
         if let Some(key) = key {
-            self.config
-                .edit(|config| config.set_lighting(&key, lighting.clone()));
+            if let Some(app) = app {
+                self.config.edit(|config| {
+                    config.devices
+                        .entry(key.clone())
+                        .or_default()
+                        .per_app_settings
+                        .entry(app)
+                        .or_default()
+                        .lighting = Some(lighting.clone());
+                });
+            } else {
+                self.config
+                    .edit(|config| config.set_lighting(&key, lighting.clone()));
+            }
             // Lighting is pushed over `SetLighting`; a full agent reload would
             // rebuild hook maps and re-apply every volatile setting on each
             // slider tick.

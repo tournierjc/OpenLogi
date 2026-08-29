@@ -221,12 +221,22 @@ impl AppState {
         let route = record.route.clone();
         let can_confirm = route.is_some();
         if let Some(persistent_key) = persistent_key {
-            self.config.edit(|config| {
-                config.set_smartshift(
-                    &persistent_key,
-                    openlogi_core::config::SmartShift::from(status),
-                );
-            });
+            let smartshift = openlogi_core::config::SmartShift::from(status);
+            if let Some(app) = self.editing_app().map(str::to_string) {
+                self.config.edit(|config| {
+                    config.devices
+                        .entry(persistent_key.clone())
+                        .or_default()
+                        .per_app_settings
+                        .entry(app)
+                        .or_default()
+                        .smartshift = Some(smartshift);
+                });
+            } else {
+                self.config.edit(|config| {
+                    config.set_smartshift(&persistent_key, smartshift);
+                });
+            }
             if !self.persist_and_reload("SmartShift") {
                 return;
             }

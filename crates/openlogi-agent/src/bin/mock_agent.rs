@@ -970,6 +970,17 @@ impl Agent for MockAgent {
         Ok(())
     }
 
+    async fn set_scroll_wheel_mode(
+        self,
+        _: Context,
+        route: DeviceRoute,
+        resolution: Option<openlogi_core::config::ScrollResolution>,
+        inverted: Option<bool>,
+    ) -> Result<(), WriteError> {
+        info!(%route, ?resolution, ?inverted, "set_scroll_wheel_mode");
+        Ok(())
+    }
+
     async fn request_accessibility_prompt(self, _: Context) {
         info!("request_accessibility_prompt (no-op in the mock)");
     }
