@@ -19,13 +19,14 @@ use gpui_component::{
     dialog::DialogButtonProps,
     h_flex,
     input::{InputEvent, InputState},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     popover::{Popover, PopoverState},
     scroll::ScrollableElement as _,
     spinner::Spinner,
     v_flex,
 };
 
-use crate::state::AppState;
+use crate::state::{AppState, DeviceKey, StateEvent};
 use crate::ui::components::{MenuRow, control_button, control_input};
 use crate::ui::theme::{self, Palette, SelectableStyle as _, Typography as _};
 
@@ -527,7 +528,7 @@ fn profile_scope_content(
         .child(add_app_popover(choices, catalog, icons, pal))
         .when_some(
             selected_profile.filter(|profile| profile.persisted),
-            |row, profile| row.child(profile_options_popover(profile, pal)),
+            |row, profile| row.child(profile_options_button(profile, pal)),
         )
 }
 
@@ -922,45 +923,49 @@ fn application_list_height(rows: usize) -> f32 {
     }
 }
 
-fn profile_options_popover(profile: ProfileChoice, pal: Palette) -> impl IntoElement {
-    Popover::new("profile-options-popover")
-        .anchor(Anchor::TopRight)
-        // `compact_panel` is the surface here too; see `add_app_popover`.
-        .appearance(false)
-        .trigger(
-            Button::new("profile-options")
-                .ghost()
-                .xsmall()
-                .icon(IconName::Ellipsis),
+/// Ellipsis menu for the selected profile. Open the confirm alert synchronously
+/// from the menu click — same path as forgetting a device. `window.defer` never
+/// surfaced the dialog in the running app.
+fn profile_options_button(profile: ProfileChoice, pal: Palette) -> impl IntoElement {
+    Button::new((
+        gpui::ElementId::from("profile-options"),
+        profile.app.clone(),
+    ))
+    .ghost()
+    .xsmall()
+    .text_color(pal.text_muted)
+    .icon(IconName::Ellipsis)
+    .dropdown_menu_with_anchor(Anchor::TopRight, profile_options_menu(profile))
+}
+
+fn profile_options_menu(
+    profile: ProfileChoice,
+) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+    move |menu, _window, _cx| {
+        menu.item(
+            PopupMenuItem::new(tr!("Remove profile…"))
+                .icon(IconName::Delete)
+                .on_click({
+                    let profile = profile.clone();
+                    move |_, window, cx| {
+                        open_remove_confirmation(window, cx, &profile);
+                    }
+                }),
         )
-        .content(move |_state, _window, cx| {
-            let popover = cx.entity().downgrade();
-            let profile = profile.clone();
-            compact_panel(pal)
-                .w(px(224.))
-                .child(title(tr!("Profile options"), pal))
-                .child(divider(pal))
-                .child(
-                    MenuRow::new("remove-profile")
-                        .role(Role::MenuItem)
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .gap_2()
-                                .child(Icon::new(IconName::Close).size_4())
-                                .child(tr!("Remove profile…")),
-                        )
-                        .on_click(move |_event, window, cx| {
-                            if let Some(popover) = popover.upgrade() {
-                                popover.update(cx, |state, cx| state.dismiss(window, cx));
-                            }
-                            open_remove_confirmation(window, cx, &profile);
-                        }),
-                )
-        })
+    }
 }
 
 fn open_remove_confirmation(window: &mut Window, cx: &mut App, profile: &ProfileChoice) {
+    let Some(device_key) = AppState::try_read(cx).and_then(|state| {
+        if !state.current_device_is_persistent() {
+            return None;
+        }
+        state
+            .current_record()
+            .map(|record| record.config_key.clone())
+    }) else {
+        return;
+    };
     let app = profile.app.clone();
     let question = match profile.override_count {
         1 => tr!(
@@ -988,13 +993,23 @@ fn open_remove_confirmation(window: &mut Window, cx: &mut App, profile: &Profile
             )
             .on_ok({
                 let app = app.clone();
+                let device_key = device_key.clone();
                 move |_event, _window, cx| {
-                    AppState::update_bindings(cx, |state| {
-                        state.remove_app_profile(&app);
-                    });
+                    commit_remove_profile(&device_key, &app, cx);
                     true
                 }
             })
+    });
+}
+
+/// Drop one persisted profile and repaint binding chrome. Runs synchronously
+/// when the confirm alert's OK button fires — deferring past dialog teardown
+/// dropped the delete and left the tab selected.
+fn commit_remove_profile(device_key: &str, app: &str, cx: &mut App) {
+    let event_key = DeviceKey::from(device_key);
+    AppState::update(cx, |state, cx| {
+        state.remove_app_profile_for_device(device_key, app);
+        cx.emit(StateEvent::BindingsChanged(event_key));
     });
 }
 
@@ -1024,15 +1039,24 @@ mod tests {
 
     use appcatalog::{Application, ApplicationIdentity, IdentityKind};
     use gpui::{
-        Context, InteractiveElement as _, IntoElement, Modifiers, ParentElement as _, Render,
-        ScrollDelta, ScrollWheelEvent, Styled as _, TestAppContext, TouchPhase, Window, div, point,
-        px, uniform_list,
+        AppContext as _, Context, InteractiveElement as _, IntoElement, Modifiers,
+        ParentElement as _, Render, ScrollDelta, ScrollWheelEvent, Styled as _, TestAppContext,
+        TouchPhase, Window, div, point, px, uniform_list,
     };
+    use gpui_component::Root;
+    use gpui_component::WindowExt;
     use gpui_component::button::Button;
+    use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
     use gpui_component::popover::Popover;
 
-    use super::{APP_ROW_H, MenuRow, compact_panel, friendly_app_name, identity_for_application};
+    use super::{
+        APP_ROW_H, MenuRow, ProfileChoice, commit_remove_profile, compact_panel, friendly_app_name,
+        identity_for_application, open_remove_confirmation,
+    };
+    use crate::state::AppState;
+    use crate::state::tests::state_with_a_known_mouse;
     use crate::ui::theme;
+    use openlogi_core::binding::{Action, ButtonId};
 
     #[test]
     fn profile_identifiers_have_a_readable_fallback() {
@@ -1188,5 +1212,92 @@ mod tests {
             Some(0),
             "after scrolling a different row sits under the cursor"
         );
+    }
+
+    /// Dropdown → confirm, matching production's synchronous menu path.
+    struct RemoveConfirmHarness;
+
+    impl Render for RemoveConfirmHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let profile = ProfileChoice {
+                app: "com.apple.Safari".into(),
+                name: "Safari".into(),
+                override_count: 1,
+                persisted: true,
+            };
+            Button::new("profile-options")
+                .label("Open")
+                .dropdown_menu_with_anchor(gpui::Anchor::TopLeft, move |menu, _, _| {
+                    menu.item(
+                        PopupMenuItem::element(|_, _| {
+                            div()
+                                .debug_selector(|| "remove-profile-item".into())
+                                .child("Remove profile…")
+                        })
+                        .on_click({
+                            let profile = profile.clone();
+                            move |_, window, cx| {
+                                open_remove_confirmation(window, cx, &profile);
+                            }
+                        }),
+                    )
+                })
+        }
+    }
+
+    #[gpui::test]
+    fn removing_a_profile_opens_the_confirmation(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            AppState::set_global(cx.new(|_| state_with_a_known_mouse()), cx);
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_cx| RemoveConfirmHarness);
+            Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        cx.simulate_click(point(px(20.), px(10.)), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let item = cx
+            .debug_bounds("remove-profile-item")
+            .expect("the remove item renders in the dropdown");
+        cx.simulate_click(item.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            cx.update(WindowExt::has_active_dialog),
+            "Remove must open a confirm alert from the dropdown menu"
+        );
+    }
+
+    #[gpui::test]
+    fn confirming_remove_deletes_the_profile(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            let mut state = state_with_a_known_mouse();
+            state.set_editing_app(Some("com.apple.Safari".into()));
+            state.commit_binding(ButtonId::Back, Action::Undo);
+            AppState::set_global(cx.new(|_| state), cx);
+        });
+
+        cx.update(|cx| {
+            commit_remove_profile(crate::state::tests::KNOWN_MOUSE_KEY, "com.apple.Safari", cx);
+        });
+
+        cx.read(|cx| {
+            let state = AppState::try_read(cx).expect("shared state");
+            assert_eq!(
+                state.editing_app(),
+                None,
+                "confirming Remove must fall back to Default"
+            );
+            assert!(
+                state.app_profiles().next().is_none(),
+                "the profile tab must disappear from the bar"
+            );
+        });
     }
 }
