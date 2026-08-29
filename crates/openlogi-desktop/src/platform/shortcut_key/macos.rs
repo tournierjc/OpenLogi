@@ -12,7 +12,10 @@ use tracing::warn;
 
 use super::state::{PhysicalKey, record};
 
-struct LocalKeyMonitor(#[expect(dead_code, reason = "held for process lifetime")] objc2::rc::Retained<objc2::runtime::AnyObject>);
+struct LocalKeyMonitor(
+    #[expect(dead_code, reason = "held for process lifetime")]
+    objc2::rc::Retained<objc2::runtime::AnyObject>,
+);
 
 static MONITOR: OnceLock<Option<LocalKeyMonitor>> = OnceLock::new();
 
@@ -27,10 +30,8 @@ pub(super) fn start() {
                 }
                 event.as_ptr()
             });
-        let monitor = NSEvent::addLocalMonitorForEventsMatchingMask_handler(
-            NSEventMask::KeyDown,
-            &handler,
-        )?;
+        let monitor =
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler)?;
         Some(LocalKeyMonitor(monitor))
     });
 }
