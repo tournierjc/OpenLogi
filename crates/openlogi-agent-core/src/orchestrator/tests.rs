@@ -911,7 +911,7 @@ fn cycle_app_profile_advances_default_and_per_app_bindings() {
     let mut orch = orchestrator(config);
     orch.devices = vec![dev("a", 1, true)];
     orch.rebuild();
-    assert_eq!(published_back_binding(&orch), Some(Action::MouseBack));
+    assert_eq!(published_back_binding(&orch), Some(Action::BrowserBack));
 
     assert!(orch.cycle_app_profile("a"));
     assert_eq!(orch.effective_app_for("a"), Some("com.example.browser"));
@@ -923,7 +923,7 @@ fn cycle_app_profile_advances_default_and_per_app_bindings() {
 
     assert!(orch.cycle_app_profile("a"));
     assert_eq!(orch.effective_app_for("a"), None);
-    assert_eq!(published_back_binding(&orch), Some(Action::MouseBack));
+    assert_eq!(published_back_binding(&orch), Some(Action::BrowserBack));
 }
 
 #[test]

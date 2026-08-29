@@ -17,11 +17,11 @@ use std::sync::{Arc, RwLock};
 use openlogi_core::app::ForegroundApp;
 use openlogi_core::binding::{Action, Binding};
 use openlogi_core::bindings::{button_bindings_for, oshook_gestures_for};
-use openlogi_core::config::{Config, LightSettings, Lighting, ScrollResolution};
+use openlogi_core::config::{Config, LightSettings, Lighting, ScrollResolution, canonical_device_key};
 use openlogi_core::device::{
     Capabilities, DeviceInventory, DeviceKind, LightCapabilities, StandaloneDevice,
 };
-use openlogi_core::device_order::{DeviceIdentity, DeviceStableId};
+use openlogi_core::device_order::{DeviceIdentity, DeviceStableId, PhysicalDeviceKey};
 use openlogi_hid::{
     CaptureChannel, ChannelPool, ChannelRegistry, DIRECT_DEVICE_INDEX, DeviceRoute,
     KEYBOARD_KEY_CIDS,
@@ -424,15 +424,29 @@ impl Orchestrator {
             .filter(|dev| dev.online && self.config.device_enabled(&dev.config_key))
             .filter_map(|dev| {
                 let route = dev.route.clone()?;
+                let identity = DeviceIdentity::from_parts(dev.serial.as_deref(), dev.unit_id);
+                let physical_key = canonical_device_key(&stable_id(dev), Some(&identity))
+                    .or_else(|| PhysicalDeviceKey::parse(&dev.config_key))?;
                 Some(plan_for_device(
                     &self.config,
+                    physical_key,
                     &dev.config_key,
                     route,
                     self.effective_app_for(&dev.config_key),
                     rearm_generation,
+                    self.os_mouse_hook_available,
                 ))
             })
             .collect()
+    }
+
+    /// Publish whether the OS movement hook is currently usable.
+    pub fn set_os_mouse_hook_available(&mut self, available: bool) {
+        if self.os_mouse_hook_available == available {
+            return;
+        }
+        self.os_mouse_hook_available = available;
+        self.publish_capture_plans();
     }
 
     /// Apply a fresh inventory snapshot. Always refreshes the snapshot the IPC
@@ -927,7 +941,7 @@ impl Orchestrator {
             .chain(
                 self.config
                     .app_profiles(device_key)
-                    .map(str::to_string),
+                    .map(|app| Some(app.to_string())),
             )
             .collect();
         if profiles.len() <= 1 {
