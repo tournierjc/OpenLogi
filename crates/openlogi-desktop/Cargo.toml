@@ -71,12 +71,6 @@ objc2-app-kit = { workspace = true, features = ["NSApplication", "NSAppearance",
 objc2-foundation = { workspace = true, features = ["NSProcessInfo", "NSString", "NSError"] }
 objc2-service-management = { workspace = true, features = ["std", "SMAppService", "SMErrors", "objc2", "objc2-foundation"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-evdev = { workspace = true }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading"] }
-
 [lints]
 workspace = true
 
