@@ -397,17 +397,20 @@ impl AppState {
     /// Delete `app`'s profile for the active device. If that profile is the
     /// one this window has open, fall back to editing the device's global
     /// bindings.
-    pub fn remove_app_profile(&mut self, app: &str) {
-        let Some(key) = self
-            .current_record()
-            .and_then(DeviceRecord::persistent_config_key)
-            .map(str::to_string)
-        else {
-            return;
-        };
+    ///
+    /// Callers that already captured the device key — for example a confirm
+    /// dialog opened while a profile was selected — must use
+    /// [`Self::remove_app_profile_for_device`] so removal does not depend on
+    /// [`Self::current_record`] still being available when the dialog closes.
+    pub(crate) fn remove_app_profile_for_device(&mut self, device_key: &str, app: &str) {
         self.config
-            .edit(|config| config.remove_app_profile(&key, app));
-        if self.editing_app() == Some(app) {
+            .edit(|config| config.remove_app_profile(device_key, app));
+        if self.bindings.editing_app(Some(device_key)) == Some(app) {
+            self.bindings
+                .set_editing_app(&self.config, Some(device_key), None);
+        } else if self.editing_app() == Some(app) {
+            // Scope may still name this app while its pinned device key drifted
+            // after a config fold — fall back to the active device's editor.
             self.set_editing_app(None);
         }
         self.persist_and_reload("per-app profile");

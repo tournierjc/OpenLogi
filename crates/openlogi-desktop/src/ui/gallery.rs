@@ -1,8 +1,9 @@
 //! Debug-only gallery for reviewing shared controls without app runtime state.
 
 use gpui::{
-    App, AppContext as _, Bounds, Context, InteractiveElement, IntoElement, ParentElement, Render,
-    Role, SharedString, Size, Styled, Window, WindowBounds, WindowOptions, div, px, rems,
+    App, AppContext as _, Bounds, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    Render, Role, SharedString, Size, Styled, Window, WindowBounds, WindowOptions, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 use gpui_base::Button as BaseButton;
 use gpui_component::{
@@ -21,6 +22,7 @@ use super::battery::BatteryIndicator;
 use super::carousel::Carousel;
 use super::choice_card::ChoiceCard;
 use super::components::{MenuRow, PanelCard, PresetChip, ProfileTab, Toggle};
+use super::shortcut_capture::ShortcutCapture;
 use super::theme::{self, ContentWidth, OPENLOGI_DARK, OPENLOGI_LIGHT, Palette, Typography as _};
 
 const TITLE: &str = "OpenLogi Component Gallery";
@@ -46,6 +48,7 @@ pub(crate) fn run() {
             window_min_size: Some(Size::new(px(760.), px(600.))),
             app_id: Some(APP_ID.into()),
             titlebar: Some(crate::windows::titlebar_options(TITLE)),
+            window_decorations: crate::windows::linux_window_decorations(),
             ..WindowOptions::default()
         };
         let opened = cx.open_window(options, |window, cx| {
@@ -56,7 +59,10 @@ pub(crate) fn run() {
 
         match opened {
             Ok(handle) => {
-                let _ = handle.update(cx, |_, window, _| window.activate_window());
+                let _ = handle.update(cx, |_, window, _| {
+                    window.set_window_title(TITLE);
+                    window.activate_window();
+                });
                 cx.activate(true);
             }
             Err(error) => {
@@ -94,10 +100,11 @@ struct ComponentGallery {
     profile_selected: usize,
     preset_selected: bool,
     carousel_selected: usize,
+    shortcut: Entity<ShortcutCapture>,
 }
 
 impl ComponentGallery {
-    fn new(_: &mut Context<Self>) -> Self {
+    fn new(cx: &mut Context<Self>) -> Self {
         Self {
             mode: ThemeMode::Light,
             scale: UiScale::Normal,
@@ -107,6 +114,11 @@ impl ComponentGallery {
             profile_selected: 1,
             preset_selected: true,
             carousel_selected: 1,
+            shortcut: cx.new(|cx| {
+                let mut capture = ShortcutCapture::new("gallery-shortcut-capture", cx);
+                capture.set_placeholder("Press a shortcut".into(), cx);
+                capture
+            }),
         }
     }
 
@@ -188,6 +200,7 @@ impl ComponentGallery {
             .child(self.profile_panel(pal, cx))
             .child(self.preset_panel(pal, cx))
             .child(Self::battery_panel(pal))
+            .child(self.shortcut_panel(pal))
     }
 
     fn choice_panel(&self, pal: Palette, cx: &mut Context<Self>) -> gpui::Div {
@@ -235,6 +248,7 @@ impl ComponentGallery {
             h_flex()
                 .gap_2()
                 .flex_wrap()
+                .items_stretch()
                 .child(effect_tile(
                     "gallery-effect-selected",
                     "Solid",
@@ -421,6 +435,15 @@ impl ComponentGallery {
         )
     }
 
+    fn shortcut_panel(&self, pal: Palette) -> gpui::Div {
+        gallery_panel(
+            "ShortcutCapture",
+            IconName::Settings,
+            v_flex().gap_2().w_full().child(self.shortcut.clone()),
+            pal,
+        )
+    }
+
     fn carousel(&self, pal: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.carousel_selected;
         let view = cx.entity();
@@ -478,7 +501,10 @@ impl Render for ComponentGallery {
             .size_full()
             .bg(pal.page)
             .text_color(pal.text_primary)
-            .child(crate::windows::aux_title_bar(TITLE, cx))
+            .when(
+                crate::windows::paints_client_titlebar(window) || cfg!(not(target_os = "linux")),
+                |this| this.child(crate::windows::aux_title_bar(TITLE, cx)),
+            )
             .child(self.toolbar(pal, cx))
             .child(
                 v_flex()
@@ -545,7 +571,10 @@ fn effect_tile(
     ChoiceCard::new(id, label)
         .selected(selected)
         .disabled(disabled)
-        .w(px(118.))
+        .flex()
+        .flex_col()
+        .h_full()
+        .w(px(132.))
         .p_2()
         .rounded(pal.control_radius)
         .border_1()
@@ -561,14 +590,27 @@ fn effect_tile(
             v_flex()
                 .gap_1()
                 .w_full()
+                .flex_1()
                 .child(
                     div()
                         .h(px(28.))
                         .w_full()
+                        .flex_shrink_0()
                         .rounded(pal.control_radius)
                         .bg(gpui::rgb(preview)),
                 )
-                .child(div().text_caption().child(label)),
+                .child(
+                    div()
+                        .h(px(33.6))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_center()
+                        .text_caption()
+                        .line_clamp(2)
+                        .child(label),
+                ),
         )
 }
 

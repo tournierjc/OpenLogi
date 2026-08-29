@@ -1,11 +1,11 @@
 use gpui::{
-    App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    MouseButton, NavigationDirection, ParentElement, Render, Styled, Subscription, Window, div,
-    prelude::FluentBuilder as _, rgb,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, MouseButton, NavigationDirection, ParentElement, Render, Styled, Subscription,
+    Window, div, prelude::FluentBuilder as _, rgb,
 };
 use gpui_base::Button as BaseButton;
 use gpui_component::{
-    Icon, IconName, TitleBar,
+    Icon, IconName, Root, TitleBar,
     button::{Button, ButtonVariants as _},
     v_flex,
 };
@@ -22,6 +22,7 @@ use crate::features::lighting::device::LightingPanel;
 use crate::features::lighting::standalone::LightPanel;
 use crate::features::mouse::view::MouseModelView;
 use crate::features::pointer::dpi::DpiPanel;
+use crate::features::pointer::report_rate::ReportRatePanel;
 use crate::features::pointer::smartshift::SmartShiftPanel;
 use crate::features::profiles::{AppCatalogPicker, ProfileIconCache};
 use crate::services::assets::AssetResolver;
@@ -175,6 +176,7 @@ pub struct AppView {
     action_ring_panel: Entity<ActionRingPanel>,
     keyboard_model: Entity<FunctionRowView>,
     dpi_panel: Entity<DpiPanel>,
+    report_rate_panel: Entity<ReportRatePanel>,
     smartshift_panel: Entity<SmartShiftPanel>,
     lighting_panel: Entity<LightingPanel>,
     camera_preview: Entity<CameraPreview>,
@@ -237,6 +239,7 @@ impl AppView {
         let action_ring_panel = cx.new(ActionRingPanel::new);
         let keyboard_model = cx.new(FunctionRowView::new);
         let dpi_panel = cx.new(DpiPanel::new);
+        let report_rate_panel = cx.new(ReportRatePanel::new);
         let smartshift_panel = cx.new(SmartShiftPanel::new);
         let lighting_panel = cx.new(LightingPanel::new);
         let camera_preview = cx.new(CameraPreview::new);
@@ -284,6 +287,7 @@ impl AppView {
                 // language switch already refreshes every window, and the root
                 // caches no localized text.
                 StateEvent::SmartShiftChanged(_)
+                | StateEvent::ReportRateChanged(_)
                 | StateEvent::CameraPermissionChanged
                 | StateEvent::DiagnosticsChanged
                 | StateEvent::LanguageChanged => false,
@@ -307,6 +311,7 @@ impl AppView {
             action_ring_panel,
             keyboard_model,
             dpi_panel,
+            report_rate_panel,
             smartshift_panel,
             lighting_panel,
             camera_preview,
@@ -381,6 +386,22 @@ impl AppView {
                 this.go_home(cx);
             }
         }))
+    }
+
+    /// gpui-component registers dialogs/sheets/notifications on [`Root`], but
+    /// [`Root::render`] does not paint those layers — the inner view must.
+    fn mount_modal_layers(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        content: impl IntoElement,
+    ) -> AnyElement {
+        div()
+            .size_full()
+            .child(content)
+            .children(Root::render_sheet_layer(window, cx))
+            .children(Root::render_dialog_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
+            .into_any_element()
     }
 
     fn accessibility_gate(cx: &mut Context<Self>) -> impl IntoElement {
@@ -467,11 +488,9 @@ fn request_accessibility(cx: &mut App) {
 }
 
 /// Client-side main-window titlebar: window controls (minimize / maximize /
-/// close on Linux + Windows), the drag region, and the app name centred.
-/// Replaces the native titlebar so Linux — where the compositor declines
-/// server-side decorations and gpui falls back to client-side ones it doesn't
-/// paint — still gets a titlebar and window controls. On macOS the widget
-/// reserves the traffic-light space.
+/// close), the drag region, and the app name centred. Painted only when
+/// [`crate::windows::paints_client_titlebar`] is true (Linux CSD). On macOS the
+/// widget reserves the traffic-light space.
 fn app_title_bar(cx: &App) -> impl IntoElement {
     let pal = theme::palette(cx);
     TitleBar::new().child(
@@ -508,11 +527,9 @@ impl Render for AppView {
             .on_action(|_: &CloseWindow, window, _| window.remove_window())
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Zoom, window, _| window.zoom_window())
-            // Linux only: a client-side titlebar (window controls + drag region)
-            // as the first row of every frame — including the pre-connection and
-            // error frames — so the chrome is present from the first frame on.
-            // macOS / Windows keep their native titlebar.
-            .when(cfg!(target_os = "linux"), |this| {
+            // Client-side titlebar only when the compositor did not already
+            // draw one. KDE/KWin SSD plus this row is the double-chrome bug.
+            .when(crate::windows::paints_client_titlebar(window), |this| {
                 this.child(app_title_bar(cx))
             });
         let root = Self::with_back_navigation(root, cx);
@@ -524,9 +541,11 @@ impl Render for AppView {
         self.config_issue_visible = config_issue.is_some();
         if let Some(issue) = config_issue {
             window.set_window_title("OpenLogi");
-            return root
-                .child(status::config_issue_body(issue, cx))
-                .into_any_element();
+            return Self::mount_modal_layers(
+                window,
+                cx,
+                root.child(status::config_issue_body(issue, cx)),
+            );
         }
 
         // The agent is the source of truth for both the permission state and
@@ -542,15 +561,15 @@ impl Render for AppView {
         let status = match link {
             AgentLink::Connecting => {
                 window.set_window_title("OpenLogi");
-                return root.child(status::connecting_body(cx)).into_any_element();
+                return Self::mount_modal_layers(window, cx, root.child(status::connecting_body(cx)));
             }
             AgentLink::Unreachable => {
                 window.set_window_title("OpenLogi");
-                return root.child(status::unreachable_body(cx)).into_any_element();
+                return Self::mount_modal_layers(window, cx, root.child(status::unreachable_body(cx)));
             }
             AgentLink::OutdatedGui => {
                 window.set_window_title("OpenLogi");
-                return root.child(status::outdated_gui_body(cx)).into_any_element();
+                return Self::mount_modal_layers(window, cx, root.child(status::outdated_gui_body(cx)));
             }
             AgentLink::Ready(status) => status,
         };
@@ -558,7 +577,10 @@ impl Render for AppView {
         let granted = status.accessibility_granted;
         if !granted && !self.accessibility_dismissed {
             window.set_window_title("OpenLogi");
-            return root.child(Self::accessibility_gate(cx)).into_any_element();
+            let content = root
+                .child(Self::accessibility_gate(cx).into_any_element())
+                .into_any_element();
+            return Self::mount_modal_layers(window, cx, content);
         }
 
         let has_device = AppState::try_global(cx)
@@ -620,6 +642,7 @@ impl Render for AppView {
                         action_ring: &self.action_ring_panel,
                         keyboard_model: &self.keyboard_model,
                         dpi_panel: &self.dpi_panel,
+                        report_rate_panel: &self.report_rate_panel,
                         smartshift_panel: &self.smartshift_panel,
                         lighting_panel: &self.lighting_panel,
                         camera_preview: &self.camera_preview,
@@ -652,10 +675,13 @@ impl Render for AppView {
             )
         };
 
-        root.child(header_el)
-            .child(content_el)
-            .when(!granted, |this| this.child(status::attention_footer(cx)))
-            .into_any_element()
+        Self::mount_modal_layers(
+            window,
+            cx,
+            root.child(header_el)
+                .child(content_el)
+                .when(!granted, |this| this.child(status::attention_footer(cx))),
+        )
     }
 }
 
@@ -850,6 +876,7 @@ mod tests {
             thumbwheel: false,
             haptic_feedback: false,
             haptic_panel: false,
+            report_rate: false,
         });
         // After 0x0005 kind-correction the record has kind=Mouse, not Keyboard.
         let tabs = DetailTab::tabs_for(&record(DeviceKind::Mouse, caps));
@@ -872,6 +899,7 @@ mod tests {
             thumbwheel: false,
             haptic_feedback: false,
             haptic_panel: false,
+            report_rate: false,
         });
         let tabs = DetailTab::tabs_for(&record(DeviceKind::Keyboard, caps));
         assert!(
@@ -892,6 +920,7 @@ mod tests {
             thumbwheel: false,
             haptic_feedback: false,
             haptic_panel: false,
+            report_rate: false,
         });
         let tabs = DetailTab::tabs_for(&record(DeviceKind::Keyboard, caps));
         assert!(tabs.contains(&DetailTab::Keys));

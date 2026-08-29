@@ -13,7 +13,7 @@ use openlogi_core::binding::{ActionRingConfig, ActionRingLayout, ActionRingSlot}
 
 pub(crate) use self::catalog::{AppCatalogPicker, ProfileIconCache};
 use self::shell::ProfileScopeShell;
-use crate::state::AppState;
+use crate::state::{AppState, StateEvent};
 use crate::ui::theme::{self, Typography as _};
 
 #[derive(Clone)]
@@ -297,6 +297,16 @@ fn profile_summary(editing_app: Option<&str>, override_count: usize) -> gpui::Sh
 }
 
 fn open_button_remove_confirmation(window: &mut Window, cx: &mut App, profile: &ProfileChoice) {
+    let Some(device_key) = AppState::try_read(cx).and_then(|state| {
+        if !state.current_device_is_persistent() {
+            return None;
+        }
+        state
+            .current_record()
+            .map(|record| record.config_key.clone())
+    }) else {
+        return;
+    };
     let question = remove_profile_question(profile);
     let app = profile.app.clone();
     window.open_alert_dialog(cx, move |alert, _, _| {
@@ -314,9 +324,12 @@ fn open_button_remove_confirmation(window: &mut Window, cx: &mut App, profile: &
             )
             .on_ok({
                 let app = app.clone();
+                let device_key = device_key.clone();
                 move |_event, _window, cx| {
-                    AppState::update_bindings(cx, |state| {
-                        state.remove_app_profile(&app);
+                    let event_key = crate::state::DeviceKey::from(device_key.as_str());
+                    AppState::update(cx, |state, cx| {
+                        state.remove_app_profile_for_device(&device_key, &app);
+                        cx.emit(StateEvent::BindingsChanged(event_key));
                     });
                     true
                 }
