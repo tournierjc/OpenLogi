@@ -18,7 +18,6 @@ use crate::probe_cache::FileProbeCacheStore;
 use crate::transport::native_backend;
 use openlogi_core::hid::smartshift::{SmartShiftAutoDisengage, SmartShiftMode, SmartShiftStatus};
 use openlogi_device::ChannelPool;
-use openlogi_device::DeviceRoute;
 use openlogi_device::backend::{HidBackend, HotplugStream};
 use openlogi_device::backlight::BacklightState;
 use openlogi_device::inventory::{Enumerator, InventoryError};
@@ -27,6 +26,7 @@ use openlogi_device::write::{
     self as device, Dpi, DpiInfo, FeatureEntry, FirmwareEntity, HapticWaveform, LightingMethod,
     LitraModel, ReprogControlEntry, ScrollResolution, ScrollWheelMode,
 };
+use openlogi_device::{DeviceIoGate, DeviceIoSignal, DeviceRoute};
 
 /// This host's HID stack.
 ///
@@ -36,6 +36,19 @@ use openlogi_device::write::{
 #[must_use]
 pub fn backend() -> Arc<dyn HidBackend> {
     native_backend()
+}
+
+/// Control the process-wide native HID activity gate from the host lifecycle
+/// observer.
+#[must_use]
+pub fn device_io_signal() -> DeviceIoSignal {
+    crate::transport::device_io_signal()
+}
+
+/// Subscribe to the process-wide native HID activity gate.
+#[must_use]
+pub fn device_io_gate() -> DeviceIoGate {
+    crate::transport::device_io_gate()
 }
 
 /// Read the sensor DPI of the device `route` reaches.
@@ -143,6 +156,31 @@ pub async fn set_keyboard_color_with(
     b: u8,
 ) -> Result<(), WriteError> {
     device::set_keyboard_color_with(&*native_backend(), route, method, r, g, b).await
+}
+
+/// Enumerate `0x8070` zones and whether per-key lighting is present.
+pub async fn read_lighting_info(
+    route: &DeviceRoute,
+    mouse: bool,
+    screen_sampler: bool,
+    audio_visualizer: bool,
+) -> Result<openlogi_core::hid::LightingInfo, WriteError> {
+    device::read_lighting_info(
+        &*native_backend(),
+        route,
+        mouse,
+        screen_sampler,
+        audio_visualizer,
+    )
+    .await
+}
+
+/// Apply a firmware lighting config, or report that a host renderer must run.
+pub async fn apply_lighting(
+    route: &DeviceRoute,
+    lighting: &openlogi_core::config::Lighting,
+) -> Result<openlogi_device::LightingApply, WriteError> {
+    device::apply_lighting(&*native_backend(), route, lighting).await
 }
 
 /// Play a haptic waveform on the device `route` reaches.

@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use openlogi_core::binding::{Action, Binding, ButtonId};
-use openlogi_hid::{CaptureChannel, ChannelRegistry};
+use openlogi_hid::{CaptureChannel, ChannelRegistry, DeviceIoGate};
 use tracing::{info, warn};
 
 use self::button::{
@@ -62,6 +62,7 @@ struct ActionExecutor {
     capture: CaptureChannel,
     registry: ChannelRegistry,
     receiver_access: ReceiverAccess,
+    device_io: DeviceIoGate,
     action_ring: tokio::sync::mpsc::UnboundedSender<Option<String>>,
 }
 
@@ -106,6 +107,7 @@ impl ActionExecutor {
                     &self.capture,
                     &self.registry,
                     &self.receiver_access,
+                    &self.device_io,
                     target,
                 );
                 return;
@@ -135,6 +137,7 @@ impl ActionExecutor {
                 &self.capture,
                 &self.registry,
                 &self.receiver_access,
+                &self.device_io,
                 target,
                 dpi,
             );
@@ -217,6 +220,7 @@ impl ActionRuntime {
         capture: CaptureChannel,
         registry: ChannelRegistry,
         receiver_access: ReceiverAccess,
+        device_io: DeviceIoGate,
         action_ring: tokio::sync::mpsc::UnboundedSender<Option<String>>,
     ) -> io::Result<Self> {
         let executor = ActionExecutor {
@@ -224,6 +228,7 @@ impl ActionRuntime {
             capture,
             registry,
             receiver_access,
+            device_io,
             action_ring,
         };
         let mut button_handler = ButtonEventHandler::new(executor.clone());
@@ -263,7 +268,9 @@ impl ActionDispatcher {
         button: ButtonId,
         binding: Option<&Binding>,
     ) -> Option<PressToken> {
-        self.buttons.try_hook_down(button, binding)
+        self.buttons.try_hook_down(button, binding).inspect(|_| {
+            crate::lighting::notify_press();
+        })
     }
 
     /// Queue one OS-hook up edge without blocking the callback.
@@ -273,7 +280,11 @@ impl ActionDispatcher {
 
     /// Queue one function-key down edge without blocking the hook callback.
     pub(crate) fn try_hook_key_down(&self, keycode: u16, action: &Action) -> bool {
-        self.buttons.try_hook_key_down(keycode, action).is_some()
+        let accepted = self.buttons.try_hook_key_down(keycode, action).is_some();
+        if accepted {
+            crate::lighting::notify_press();
+        }
+        accepted
     }
 
     /// Queue one function-key up edge without blocking the hook callback.
@@ -306,7 +317,11 @@ impl ActionDispatcher {
         button: ButtonId,
         binding: Option<&Binding>,
     ) -> Option<PressToken> {
-        self.buttons.try_hidpp_down(session, button, binding)
+        self.buttons
+            .try_hidpp_down(session, button, binding)
+            .inspect(|_| {
+                crate::lighting::notify_press();
+            })
     }
 
     /// Queue one HID++ up edge for a specific capture session.
@@ -323,6 +338,7 @@ impl ActionDispatcher {
         binding: Option<&Binding>,
     ) {
         self.buttons.try_hidpp_pulse(session, button, binding);
+        crate::lighting::notify_press();
     }
 
     /// Cancel presses from a HID++ session that is stopping or has died.

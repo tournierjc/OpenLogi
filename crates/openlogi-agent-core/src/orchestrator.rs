@@ -17,13 +17,13 @@ use std::sync::{Arc, RwLock};
 use openlogi_core::app::ForegroundApp;
 use openlogi_core::binding::{Action, Binding};
 use openlogi_core::bindings::{button_bindings_for, oshook_gestures_for};
-use openlogi_core::config::{Config, LightSettings, ScrollResolution, canonical_device_key};
+use openlogi_core::config::{Config, LightSettings, Lighting, ScrollResolution, canonical_device_key};
 use openlogi_core::device::{
     Capabilities, DeviceInventory, DeviceKind, LightCapabilities, StandaloneDevice,
 };
 use openlogi_core::device_order::{DeviceIdentity, DeviceStableId, PhysicalDeviceKey};
 use openlogi_hid::{
-    CaptureChannel, ChannelPool, ChannelRegistry, DIRECT_DEVICE_INDEX, DeviceRoute,
+    CaptureChannel, ChannelPool, ChannelRegistry, DIRECT_DEVICE_INDEX, DeviceIoGate, DeviceRoute,
     KEYBOARD_KEY_CIDS,
 };
 use openlogi_ipc::InventoryHealth;
@@ -89,6 +89,8 @@ pub struct SharedRuntime {
     pub capture_channel: CaptureChannel,
     /// Exact-route channels owned and published by the inventory enumerator.
     pub channel_registry: ChannelRegistry,
+    /// Host-lifecycle gate shared by every producer of proactive device I/O.
+    pub device_io: DeviceIoGate,
     /// Shared transport pool used by long-running host-switch sessions.
     pub channel_pool: ChannelPool,
     /// The keyboard key-capture watcher's target + bindings, `None` while no
@@ -106,6 +108,8 @@ pub struct SharedRuntime {
     pub receiver_access: ReceiverAccess,
     /// Keyboard → pointing-device routes resolved from `config.toml`.
     pub host_switch_links: HostSwitchLinks,
+    /// Host lighting renderer sessions (screen sampler, visualizer, shows).
+    pub lighting: crate::lighting::LightingHost,
 }
 
 impl SharedRuntime {
@@ -118,6 +122,7 @@ impl SharedRuntime {
             &self.capture_channel,
             &self.channel_registry,
             &self.receiver_access,
+            &self.device_io,
             route,
         )
     }
@@ -131,6 +136,7 @@ impl SharedRuntime {
             &self.keyboard_channel,
             &self.channel_registry,
             &self.receiver_access,
+            &self.device_io,
             route,
         )
     }
@@ -153,12 +159,12 @@ pub struct Orchestrator {
     /// set/route/online state looks identical across the sleep gap, so the
     /// next refresh re-applies volatile settings to every online device.
     reapply_all_next_refresh: bool,
-    /// Whether the last enumeration tick failed to open HID++ nodes; published
+    /// Whether the last enumeration pass failed to open HID++ nodes; published
     /// atomically with the inventory so no observation pairs a fresh device
     /// set with a stale flag.
     hid_open_failures: bool,
-    /// Config keys of devices first sighted (or wake-flagged) recently, with
-    /// remaining confirming re-apply budget: the first write can race the
+    /// Config keys of devices first sighted (or targeted after wake) recently,
+    /// with remaining confirming re-apply budget: the first write can race the
     /// device's own boot or reconnect and be lost.
     reapply_followup: HashMap<String, u8>,
     /// Last successful aggregate camera-use sample. `None` means the macOS
@@ -221,12 +227,14 @@ impl Orchestrator {
             capture_plans,
             capture_channel: Arc::new(RwLock::new(None)),
             channel_registry: ChannelRegistry::default(),
+            device_io: openlogi_hid::host::device_io_gate(),
             channel_pool: openlogi_hid::host::channel_pool(),
             keyboard_spec,
             keyboard_channel: Arc::new(RwLock::new(None)),
             capture_rearm_generation: Arc::new(AtomicU64::new(0)),
             receiver_access: ReceiverAccess::default(),
             host_switch_links,
+            lighting: crate::lighting::LightingHost::default(),
         };
         let orch = Self {
             config,
@@ -256,6 +264,15 @@ impl Orchestrator {
     #[must_use]
     pub fn shared(&self) -> SharedRuntime {
         self.shared.clone()
+    }
+
+    /// Whether `route` addresses a mouse-like device (zonal lighting catalog).
+    #[must_use]
+    pub fn route_is_mouse(&self, route: &DeviceRoute) -> bool {
+        self.devices.iter().any(|dev| {
+            dev.route.as_ref() == Some(route)
+                && matches!(dev.kind, DeviceKind::Mouse | DeviceKind::Trackball)
+        })
     }
 
     fn current_key(&self) -> Option<&str> {
@@ -452,7 +469,7 @@ impl Orchestrator {
     /// altering the device *set*), but only re-picks the selection and rebuilds
     /// the shared maps when the device set or runtime selection changed —
     /// `rebuild()` is driven by `config_key` + route and resets the live
-    /// DPI-cycle index, so running it every 2s tick on a steady selection
+    /// DPI-cycle index, so running it on every steady reconciliation
     /// would snap DPI back to `preset[0]` (and burn three `RwLock` writes)
     /// for nothing.
     pub fn refresh_inventory(
@@ -519,6 +536,13 @@ impl Orchestrator {
         self.rebuild();
     }
 
+    /// Whether volatile-setting writes still need a delayed inventory pass to
+    /// confirm them after device boot or system resume.
+    #[must_use]
+    pub fn needs_reapply_confirmation(&self) -> bool {
+        !self.reapply_followup.is_empty()
+    }
+
     /// Force a volatile-settings re-apply for every online device on the next
     /// inventory refresh. Called on a detected system wake: the devices were
     /// likely power-cycled during the sleep, but the first post-wake snapshot
@@ -549,7 +573,11 @@ impl Orchestrator {
         let smartshift = device
             .and_then(|d| d.effective_smartshift(&route_key))
             .map(openlogi_hid::SmartShiftStatus::from);
-        if resolution.is_some() || inverted.is_some() || dpi.is_some() || smartshift.is_some() {
+        if resolution.is_some()
+            || inverted.is_some()
+            || dpi.is_some()
+            || smartshift.is_some()
+        {
             crate::hardware::reapply_mouse_volatile_in_background(
                 &self.shared.device(&route),
                 resolution,
@@ -562,7 +590,12 @@ impl Orchestrator {
             .and_then(|d| d.effective_lighting(&route_key))
             .filter(|l| l.enabled)
         {
-            crate::hardware::set_lighting_in_background(self.shared.device(&route), lighting);
+            let host = self.shared.lighting.clone();
+            crate::hardware::set_lighting_in_background(
+                &host,
+                &self.shared.device(&route),
+                lighting.clone(),
+            );
         }
         if let Some(fn_lock) = self.config.fn_lock(key) {
             crate::hardware::write_fn_lock_in_background(
@@ -573,7 +606,12 @@ impl Orchestrator {
         if let Some(capabilities) = dev.light_capabilities
             && let Some(light) = self.effective_light_settings(key)
         {
-            crate::hardware::set_light_in_background(Some(route), &light, capabilities);
+            crate::hardware::set_light_in_background(
+                &self.shared.device_io,
+                Some(route),
+                &light,
+                capabilities,
+            );
         }
     }
 
@@ -603,7 +641,12 @@ impl Orchestrator {
                 continue;
             };
             light.enabled = active;
-            crate::hardware::set_light_in_background(dev.route.clone(), &light, capabilities);
+            crate::hardware::set_light_in_background(
+                &self.shared.device_io,
+                dev.route.clone(),
+                &light,
+                capabilities,
+            );
             applied += 1;
         }
         info!(previous = ?previous, active, lights = applied, "applied camera-linked light state");
@@ -799,6 +842,19 @@ impl Orchestrator {
         true
     }
 
+    /// Remember a lighting change pushed over IPC so reconnect re-apply matches
+    /// the GUI without a full config reload.
+    pub fn store_lighting(&mut self, route: &DeviceRoute, lighting: Lighting) {
+        let Some(dev) = self
+            .devices
+            .iter()
+            .find(|dev| dev.route.as_ref() == Some(route))
+        else {
+            return;
+        };
+        self.config.set_lighting(dev.config_key.as_str(), lighting);
+    }
+
     /// Replace the config (after `config.toml` changed) and rebuild everything.
     pub fn reload_config(&mut self, config: Config) {
         // Parameter-only edits must not erase a transient manual choice while
@@ -888,7 +944,12 @@ impl Orchestrator {
                 self.effective_light_settings(&dev.config_key),
                 dev.light_capabilities,
             ) {
-                crate::hardware::set_light_in_background(dev.route.clone(), &light, capabilities);
+                crate::hardware::set_light_in_background(
+                    &self.shared.device_io,
+                    dev.route.clone(),
+                    &light,
+                    capabilities,
+                );
             }
         }
     }
@@ -1089,13 +1150,13 @@ fn any_device_needs_capture_rearm(
     !reapply_targets(prev, next, reapply_all).is_empty()
 }
 
-/// How many inventory ticks a first-sighted or wake-flagged device keeps
-/// re-applying its volatile settings after the initial write. A cold restart
-/// leaves a Bolt/Unifying mouse slow to enumerate — and a system wake can
-/// enumerate a receiver whose mouse link is still re-establishing — so the
-/// first write (and a single confirm) can both time out against a
-/// still-booting device; retrying for ~8s at the 2s cadence lets the write
-/// land once it finishes booting.
+/// How many explicit confirmation passes a first-sighted or wake-targeted
+/// device keeps re-applying its volatile settings after the initial write. A
+/// cold restart leaves a Bolt/Unifying mouse slow to enumerate — and a system
+/// wake can enumerate a receiver whose mouse link is still re-establishing —
+/// so the first write (and a single confirm) can both time out against a
+/// still-booting device. Four confirmations are requested at two-second
+/// intervals; any intervening authoritative reconciliation satisfies one.
 const VOLATILE_REAPPLY_CONFIRM_RETRIES: u8 = 4;
 
 /// Plan this refresh's volatile-settings writes: the [`reapply_targets`] set

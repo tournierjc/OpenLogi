@@ -161,7 +161,10 @@ impl DetailTab {
 /// Binding chrome this view itself rebuilds. Child panels subscribe on their
 /// own; the profile bar (Buttons) and the configuration card (Device) do not.
 fn root_paints_binding_chrome(tab: DetailTab) -> bool {
-    matches!(tab, DetailTab::Buttons | DetailTab::ActionsRing | DetailTab::Device)
+    matches!(
+        tab,
+        DetailTab::Buttons | DetailTab::ActionsRing | DetailTab::Device
+    )
 }
 
 /// Root application view.

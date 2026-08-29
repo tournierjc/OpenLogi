@@ -298,6 +298,7 @@ fn profile_summary(editing_app: Option<&str>, override_count: usize) -> gpui::Sh
 
 fn open_button_remove_confirmation(window: &mut Window, cx: &mut App, profile: &ProfileChoice) {
     let question = remove_profile_question(profile);
+    let app = profile.app.clone();
     window.open_alert_dialog(cx, move |alert, _, _| {
         alert
             .title(question.clone())
@@ -311,11 +312,14 @@ fn open_button_remove_confirmation(window: &mut Window, cx: &mut App, profile: &
                     .cancel_text(tr!("Cancel"))
                     .show_cancel(true),
             )
-            .on_ok(move |_event, _window, cx| {
-                AppState::update_bindings(cx, |state| {
-                    state.remove_editing_app_profile();
-                });
-                true
+            .on_ok({
+                let app = app.clone();
+                move |_event, _window, cx| {
+                    AppState::update_bindings(cx, |state| {
+                        state.remove_app_profile(&app);
+                    });
+                    true
+                }
             })
     });
 }
