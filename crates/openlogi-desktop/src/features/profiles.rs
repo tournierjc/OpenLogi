@@ -253,8 +253,8 @@ fn open_remove_confirmation(window: &mut Window, cx: &mut App, profile: &Profile
     }) else {
         return;
     };
-    let app = profile.app.clone();
     let question = remove_profile_question(profile);
+    let app = profile.app.clone();
     window.open_alert_dialog(cx, move |alert, _, _| {
         alert
             .title(question.clone())

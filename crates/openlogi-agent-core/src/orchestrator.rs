@@ -23,7 +23,7 @@ use openlogi_core::device::{
 };
 use openlogi_core::device_order::{DeviceIdentity, DeviceStableId, PhysicalDeviceKey};
 use openlogi_hid::{
-    CaptureChannel, ChannelPool, ChannelRegistry, DIRECT_DEVICE_INDEX, DeviceRoute,
+    CaptureChannel, ChannelPool, ChannelRegistry, DIRECT_DEVICE_INDEX, DeviceIoGate, DeviceRoute,
     KEYBOARD_KEY_CIDS,
 };
 use openlogi_ipc::InventoryHealth;
@@ -87,6 +87,8 @@ pub struct SharedRuntime {
     pub capture_channel: CaptureChannel,
     /// Exact-route channels owned and published by the inventory enumerator.
     pub channel_registry: ChannelRegistry,
+    /// Host-lifecycle gate shared by every producer of proactive device I/O.
+    pub device_io: DeviceIoGate,
     /// Shared transport pool used by long-running host-switch sessions.
     pub channel_pool: ChannelPool,
     /// The keyboard key-capture watcher's target + bindings, `None` while no
@@ -118,6 +120,7 @@ impl SharedRuntime {
             &self.capture_channel,
             &self.channel_registry,
             &self.receiver_access,
+            &self.device_io,
             route,
         )
     }
@@ -131,6 +134,7 @@ impl SharedRuntime {
             &self.keyboard_channel,
             &self.channel_registry,
             &self.receiver_access,
+            &self.device_io,
             route,
         )
     }
@@ -155,12 +159,12 @@ pub struct Orchestrator {
     /// set/route/online state looks identical across the sleep gap, so the
     /// next refresh re-applies volatile settings to every online device.
     reapply_all_next_refresh: bool,
-    /// Whether the last enumeration tick failed to open HID++ nodes; published
+    /// Whether the last enumeration pass failed to open HID++ nodes; published
     /// atomically with the inventory so no observation pairs a fresh device
     /// set with a stale flag.
     hid_open_failures: bool,
-    /// Config keys of devices first sighted (or wake-flagged) recently, with
-    /// remaining confirming re-apply budget: the first write can race the
+    /// Config keys of devices first sighted (or targeted after wake) recently,
+    /// with remaining confirming re-apply budget: the first write can race the
     /// device's own boot or reconnect and be lost.
     reapply_followup: HashMap<String, u8>,
     /// Last successful aggregate camera-use sample. `None` means the macOS
@@ -223,6 +227,7 @@ impl Orchestrator {
             capture_plans,
             capture_channel: Arc::new(RwLock::new(None)),
             channel_registry: ChannelRegistry::default(),
+            device_io: openlogi_hid::host::device_io_gate(),
             channel_pool: openlogi_hid::host::channel_pool(),
             keyboard_spec,
             keyboard_channel: Arc::new(RwLock::new(None)),
@@ -454,7 +459,7 @@ impl Orchestrator {
     /// altering the device *set*), but only re-picks the selection and rebuilds
     /// the shared maps when the device set or runtime selection changed —
     /// `rebuild()` is driven by `config_key` + route and resets the live
-    /// DPI-cycle index, so running it every 2s tick on a steady selection
+    /// DPI-cycle index, so running it on every steady reconciliation
     /// would snap DPI back to `preset[0]` (and burn three `RwLock` writes)
     /// for nothing.
     pub fn refresh_inventory(
@@ -519,6 +524,13 @@ impl Orchestrator {
         self.devices = devices;
         self.current = next_current;
         self.rebuild();
+    }
+
+    /// Whether volatile-setting writes still need a delayed inventory pass to
+    /// confirm them after device boot or system resume.
+    #[must_use]
+    pub fn needs_reapply_confirmation(&self) -> bool {
+        !self.reapply_followup.is_empty()
     }
 
     /// Force a volatile-settings re-apply for every online device on the next
@@ -588,7 +600,12 @@ impl Orchestrator {
         if let Some(capabilities) = dev.light_capabilities
             && let Some(light) = self.effective_light_settings(key)
         {
-            crate::hardware::set_light_in_background(Some(route), &light, capabilities);
+            crate::hardware::set_light_in_background(
+                &self.shared.device_io,
+                Some(route),
+                &light,
+                capabilities,
+            );
         }
     }
 
@@ -618,7 +635,12 @@ impl Orchestrator {
                 continue;
             };
             light.enabled = active;
-            crate::hardware::set_light_in_background(dev.route.clone(), &light, capabilities);
+            crate::hardware::set_light_in_background(
+                &self.shared.device_io,
+                dev.route.clone(),
+                &light,
+                capabilities,
+            );
             applied += 1;
         }
         info!(previous = ?previous, active, lights = applied, "applied camera-linked light state");
@@ -925,7 +947,12 @@ impl Orchestrator {
                 self.effective_light_settings(&dev.config_key),
                 dev.light_capabilities,
             ) {
-                crate::hardware::set_light_in_background(dev.route.clone(), &light, capabilities);
+                crate::hardware::set_light_in_background(
+                    &self.shared.device_io,
+                    dev.route.clone(),
+                    &light,
+                    capabilities,
+                );
             }
         }
     }
@@ -1189,13 +1216,13 @@ fn any_device_needs_capture_rearm(
     !reapply_targets(prev, next, reapply_all).is_empty()
 }
 
-/// How many inventory ticks a first-sighted or wake-flagged device keeps
-/// re-applying its volatile settings after the initial write. A cold restart
-/// leaves a Bolt/Unifying mouse slow to enumerate — and a system wake can
-/// enumerate a receiver whose mouse link is still re-establishing — so the
-/// first write (and a single confirm) can both time out against a
-/// still-booting device; retrying for ~8s at the 2s cadence lets the write
-/// land once it finishes booting.
+/// How many explicit confirmation passes a first-sighted or wake-targeted
+/// device keeps re-applying its volatile settings after the initial write. A
+/// cold restart leaves a Bolt/Unifying mouse slow to enumerate — and a system
+/// wake can enumerate a receiver whose mouse link is still re-establishing —
+/// so the first write (and a single confirm) can both time out against a
+/// still-booting device. Four confirmations are requested at two-second
+/// intervals; any intervening authoritative reconciliation satisfies one.
 const VOLATILE_REAPPLY_CONFIRM_RETRIES: u8 = 4;
 
 /// Plan this refresh's volatile-settings writes: the [`reapply_targets`] set

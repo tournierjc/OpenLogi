@@ -510,6 +510,10 @@ impl AppState {
         if self.bindings.editing_app(Some(device_key)) == Some(app) {
             self.bindings.clear_editing_scope_for(device_key);
             self.refresh_binding_projections();
+        } else if self.editing_app() == Some(app) {
+            // Scope may still name this app while its pinned device key drifted
+            // after a config fold — fall back to the active device's editor.
+            self.set_editing_app(None);
         }
         self.persist_and_reload("per-app profile");
     }

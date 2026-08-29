@@ -23,8 +23,12 @@ use crate::ui::components::Toggle;
 use crate::ui::theme::{self, Palette, Typography as _};
 
 const SWATCH: f32 = 28.;
-const TILE_W: f32 = 118.;
+/// Wide enough for most effect names on one line; paired with a fixed
+/// two-line caption area so wrapped labels do not change tile height.
+const TILE_W: f32 = 132.;
 const PREVIEW_H: f32 = 28.;
+/// Two [`text_caption`] lines (0.75 rem × 1.4 leading × 2).
+const TILE_LABEL_H: f32 = 2.1 * 16.;
 
 const PALETTE: &[Rgb] = &[
     Rgb::new(0xff, 0x3b, 0x30),
@@ -186,7 +190,7 @@ impl Render for LightingPanel {
             .child(lighting_header(lighting.enabled, pal))
             .when(!prefabs.is_empty(), |this| {
                 this.child(
-                    h_flex().gap_2().flex_wrap().children(
+                    h_flex().gap_2().flex_wrap().items_stretch().children(
                         prefabs
                             .iter()
                             .copied()
@@ -252,6 +256,9 @@ fn effect_tile(prefab: LightingPrefab, lighting: &Lighting, t: f32, pal: Palette
     let color = preview_rgb(prefab.effect, t, lighting.color);
     ChoiceCard::new(("light-effect", prefab.effect as u32), label.clone())
         .selected(selected)
+        .flex()
+        .flex_col()
+        .h_full()
         .w(px(TILE_W))
         .p_2()
         .rounded(pal.control_radius)
@@ -268,17 +275,26 @@ fn effect_tile(prefab: LightingPrefab, lighting: &Lighting, t: f32, pal: Palette
             v_flex()
                 .gap_1()
                 .w_full()
+                .flex_1()
                 .child(
                     div()
                         .h(px(PREVIEW_H))
                         .w_full()
+                        .flex_shrink_0()
                         .rounded(pal.control_radius)
                         .bg(rgb(color)),
                 )
                 .child(
                     div()
+                        .h(px(TILE_LABEL_H))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_center()
                         .text_caption()
                         .text_color(pal.text_primary)
+                        .line_clamp(2)
                         .child(label),
                 ),
         )
