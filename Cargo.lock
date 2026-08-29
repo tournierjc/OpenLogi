@@ -1157,9 +1157,9 @@ dependencies = [
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -5830,6 +5830,7 @@ dependencies = [
  "interprocess",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "opener",
  "openlogi-agent-core",
@@ -5848,6 +5849,7 @@ dependencies = [
  "tracing-subscriber",
  "windows-sys 0.61.2",
  "winreg",
+ "zbus",
 ]
 
 [[package]]
@@ -6082,16 +6084,19 @@ dependencies = [
 name = "openlogi-hook"
 version = "0.8.1"
 dependencies = [
+ "block2 0.6.2",
  "core-foundation 0.10.0",
  "core-graphics 0.25.0",
  "ctrlc",
  "evdev",
  "foreign-types-shared",
+ "futures-lite",
  "libc",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-application-services",
  "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
  "openlogi-core",
  "openlogi-inject",
  "thiserror 2.0.18",
