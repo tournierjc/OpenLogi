@@ -41,6 +41,7 @@ use self::dispatch::InputDispatcher;
 use super::capture_session::{CaptureSession, CompletionAction, ReconcileAction};
 use crate::capture_plan::{CaptureTarget, DeviceCapturePlan, DispatchPlan, SharedCapturePlans};
 use crate::receiver_access::{ReceiverAccess, ReceiverRequestState, SessionReceiverLease};
+use crate::runtime::hook::SharedHookMaps;
 use crate::runtime::scroll::ScrollInputHandle;
 use crate::runtime::{ActionDispatcher, HidppSessionId};
 
@@ -51,13 +52,22 @@ const RETRY_DELAY: Duration = Duration::from_secs(1);
 pub struct GestureOutputs {
     actions: ActionDispatcher,
     scroll: ScrollInputHandle,
+    hook_maps: SharedHookMaps,
 }
 
 impl GestureOutputs {
     /// Build gesture outputs backed by the shared action and scroll runtimes.
     #[must_use]
-    pub fn new(actions: ActionDispatcher, scroll: ScrollInputHandle) -> Self {
-        Self { actions, scroll }
+    pub fn new(
+        actions: ActionDispatcher,
+        scroll: ScrollInputHandle,
+        hook_maps: SharedHookMaps,
+    ) -> Self {
+        Self {
+            actions,
+            scroll,
+            hook_maps,
+        }
     }
 
     fn cancel_session(&self, session: &HidppSessionId) {
