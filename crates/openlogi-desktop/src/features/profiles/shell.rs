@@ -110,7 +110,7 @@ fn profile_scope_content(shell: ProfileScopeShell, pal: Palette) -> impl IntoEle
                 .flex_none()
                 .text_body()
                 .text_color(pal.text_muted)
-                .child(tr!("Profile")),
+                .child(tr!("profiles.profile")),
         )
         .child(
             h_flex()
@@ -123,7 +123,7 @@ fn profile_scope_content(shell: ProfileScopeShell, pal: Palette) -> impl IntoEle
                 .child(
                     profile_tab(
                         format!("{}:default", shell.id_base),
-                        tr!("Default"),
+                        tr!("common.default"),
                         None,
                         default_selected,
                         pal,

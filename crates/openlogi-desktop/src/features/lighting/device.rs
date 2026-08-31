@@ -525,7 +525,11 @@ fn swatch(color: Rgb, current: &Lighting, pal: Palette) -> impl IntoElement {
     BaseButton::new(("light-swatch", color.packed()))
         .role(Role::RadioButton)
         .selected(selected)
-        .accessibility_label(format!("{} #{:06X}", tr!("Lighting"), color.packed()))
+        .accessibility_label(format!(
+            "{} #{:06X}",
+            tr!("device.lighting"),
+            color.packed()
+        ))
         .aria_toggled(if selected {
             Toggled::True
         } else {

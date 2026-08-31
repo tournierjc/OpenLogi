@@ -96,7 +96,7 @@ impl Render for UpdateConsentView {
                     .child(
                         div()
                             .text_heading()
-                            .child(tr!("Check for updates?")),
+                            .child(tr!("updates.check_for_updates_consent_title")),
                     )
                     .child(
                         div()
@@ -104,11 +104,7 @@ impl Render for UpdateConsentView {
                             .text_body()
                             .text_center()
                             .text_color(pal.text_muted)
-                            .child(tr!(
-                                "OpenLogi can check GitHub once per launch for a new version — query \
-                                 only, no automatic download or telemetry. You can change this anytime \
-                                 in Settings."
-                            )),
+                            .child(tr!("updates.update_consent_description")),
                     )
                     .child(
                         h_flex()
@@ -117,13 +113,13 @@ impl Render for UpdateConsentView {
                             .child(
                                 Button::new("update-consent-decline")
                                     .outline()
-                                    .label(tr!("Not now"))
+                                    .label(tr!("common.not_now"))
                                     .on_click(|_, window, cx| answer(false, window, cx)),
                             )
                             .child(
                                 Button::new("update-consent-accept")
                                     .primary()
-                                    .label(tr!("Enable"))
+                                    .label(tr!("common.enable"))
                                     .on_click(|_, window, cx| answer(true, window, cx)),
                             ),
                     ),

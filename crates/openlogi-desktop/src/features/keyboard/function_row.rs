@@ -27,8 +27,8 @@ use std::sync::Arc;
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, Entity, FontWeight, Hsla,
     InteractiveElement, IntoElement, ParentElement, PathBuilder, Render, RenderOnce, Role,
-    StatefulInteractiveElement as _, Styled, Subscription, Window, canvas, div, hsla, point,
-    prelude::FluentBuilder as _, px, rgb, svg,
+    SharedString, StatefulInteractiveElement as _, Styled, Subscription, Window, canvas, div, hsla,
+    point, prelude::FluentBuilder as _, px, rgb, svg,
 };
 use gpui_component::{Selectable as _, h_flex, input::InputState, v_flex};
 use openlogi_core::binding::{Action, WorkflowStep};
@@ -208,12 +208,12 @@ impl FunctionRowView {
     pub(crate) fn new_text_state(
         &mut self,
         seed: String,
-        placeholder: &str,
+        placeholder: SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<InputState> {
         let state = cx.new(|cx| {
-            let mut s = InputState::new(window, cx).placeholder(tr!(placeholder));
+            let mut s = InputState::new(window, cx).placeholder(placeholder);
             if !seed.is_empty() {
                 s.set_value(seed, window, cx);
             }
@@ -302,7 +302,7 @@ impl Render for FunctionRowView {
                     if let Some(state) = self.text_state.clone() {
                         crate::ui::components::localize_placeholder(
                             &state,
-                            tr!(text_editor_placeholder(kind)),
+                            text_editor_placeholder(kind),
                             window,
                             cx,
                         );
@@ -677,7 +677,7 @@ fn key_click_target(
 fn binding_label(action: Option<&Action>) -> gpui::SharedString {
     match action {
         Some(action) => localized_action_label(action),
-        None => tr!("Off"),
+        None => tr!("common.off"),
     }
 }
 
@@ -850,7 +850,7 @@ fn title_header(key_name: &str, pal: &Palette) -> impl IntoElement {
                 .text_caption()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(pal.text_muted)
-                .child(tr!("Bind %{name}", name => key_name)),
+                .child(tr!("actions.bind_control", name => key_name)),
         )
 }
 
@@ -889,7 +889,7 @@ fn panel_action_rows(
 
     children.push(
         v_flex()
-            .child(editor_section(tr!("Power User").to_string(), *pal))
+            .child(editor_section(tr!("actions.power_user").to_string(), *pal))
             .children(power_user_actions.iter().enumerate().map(
                 |(idx, (kind, label, icon_path))| {
                     let kind = *kind;
@@ -1161,7 +1161,7 @@ fn image_or_fallback(
             .items_center()
             .justify_center()
             .text_color(pal.text_muted)
-            .child(tr!("No keyboard image available"))
+            .child(tr!("keyboard.no_keyboard_image_available"))
             .into_any_element(),
     }
 }

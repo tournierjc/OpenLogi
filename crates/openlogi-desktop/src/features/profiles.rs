@@ -202,7 +202,7 @@ pub(crate) fn profile_canvas_status(cx: &App) -> Option<gpui::Div> {
     let summary = profile_summary(editing_app.as_deref(), override_count);
     let active = state
         .active_profile_name()
-        .map_or_else(|| tr!("Default"), gpui::SharedString::from);
+        .map_or_else(|| tr!("common.default"), gpui::SharedString::from);
 
     Some(
         h_flex()
@@ -218,7 +218,7 @@ pub(crate) fn profile_canvas_status(cx: &App) -> Option<gpui::Div> {
             .child(
                 div()
                     .flex_none()
-                    .child(tr!("Active: %{profile}", profile => active)),
+                    .child(tr!("profiles.active_profile_value", profile => active)),
             ),
     )
 }
@@ -268,9 +268,9 @@ fn open_remove_confirmation(window: &mut Window, cx: &mut App, profile: &Profile
             ))
             .button_props(
                 DialogButtonProps::default()
-                    .ok_text(tr!("Remove profile"))
+                    .ok_text(tr!("profiles.remove_profile"))
                     .ok_variant(ButtonVariant::Danger)
-                    .cancel_text(tr!("Cancel"))
+                    .cancel_text(tr!("common.cancel"))
                     .show_cancel(true),
             )
             .on_ok({
@@ -292,11 +292,11 @@ fn open_remove_confirmation(window: &mut Window, cx: &mut App, profile: &Profile
 fn remove_profile_question(profile: &ProfileChoice) -> gpui::SharedString {
     match profile.override_count {
         1 => tr!(
-            "Remove %{app} profile and its 1 override?",
+            "profiles.remove_app_profile_single_override",
             app => profile.name.clone()
         ),
         count => tr!(
-            "Remove %{app} profile and its %{count} overrides?",
+            "profiles.remove_app_profile_multiple_overrides",
             app => profile.name.clone(),
             count => count
         ),
