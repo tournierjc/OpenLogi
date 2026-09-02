@@ -492,15 +492,8 @@ impl AppState {
         let key = self
             .current_record()
             .and_then(DeviceRecord::persistent_config_key)?;
-        if self.app_profile_overrides().contains_key(key) {
-            return self
-                .editing_app()
-                .and_then(|app| self.recent_app_name(app));
-        }
-        let app = self.profile_app()?;
-        self.config
-            .has_app_override(key, &app.id)
-            .then_some(app.display_name.as_str())
+        let app = self.profile_scope_from_agent(key)?;
+        self.recent_app_name(&app)
     }
 
     /// Resolved profile scope for `config_key`: a manual override from the
@@ -522,7 +515,7 @@ impl AppState {
         if !self.set_app_profile_overrides(overrides) {
             return None;
         }
-        self.sync_editing_app_from_agent()
+        self.sync_editing_app_from_agent(true)
     }
 }
 

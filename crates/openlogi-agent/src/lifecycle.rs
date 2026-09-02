@@ -260,17 +260,18 @@ impl Armed {
         info!("openlogi-agent started");
         loop {
             tokio::select! {
-                Some(event) = watchers.next() => {
-                    running.apply_watcher(event, &inventory_refresh).await;
-                }
-                Some(device_key) = running.inputs.triggers.recv() => {
-                    running.begin_action_ring(device_key.as_deref()).await;
-                }
+                biased;
                 Some(device_key) = running.inputs.app_profile_cycles.recv() => {
                     let changed = running.orchestrator.lock().await.cycle_app_profile(&device_key);
                     if changed {
                         running.inputs.dispatcher.cancel_all_buttons();
                     }
+                }
+                Some(event) = watchers.next() => {
+                    running.apply_watcher(event, &inventory_refresh).await;
+                }
+                Some(device_key) = running.inputs.triggers.recv() => {
+                    running.begin_action_ring(device_key.as_deref()).await;
                 }
                 () = running.signals.recv() => running.shut_down("shutdown signal"),
                 // Uninstalled while running — leave through the same door so

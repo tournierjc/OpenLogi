@@ -333,7 +333,7 @@ impl Runtime {
                     let profile_scope_changed = state
                         .adopt_agent_app_profile_overrides(snapshot.app_profile_overrides.clone())
                         .is_some()
-                        || (foreground_changed && state.sync_editing_app_from_agent().is_some());
+                        || (foreground_changed && state.sync_editing_app_from_agent(false).is_some());
                     if merged {
                         cx.emit(StateEvent::InventoryChanged);
                     }

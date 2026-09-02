@@ -175,14 +175,14 @@ impl AppState {
 
     /// Mirror the agent's active profile scope into the open editor without
     /// pushing settings back to the agent.
-    pub(crate) fn sync_editing_app_from_agent(&mut self) -> Option<DeviceKey> {
+    pub(crate) fn sync_editing_app_from_agent(&mut self, force: bool) -> Option<DeviceKey> {
         let (config_key, device_key, app) = {
             let record = self.current_record()?;
             let config_key = record.persistent_config_key()?.to_string();
             let app = self.profile_scope_from_agent(&config_key);
             (config_key, record.device_key(), app)
         };
-        if self.editing_app().map(str::to_string) == app {
+        if !force && self.editing_app().map(str::to_string) == app {
             return None;
         }
         self.bindings
