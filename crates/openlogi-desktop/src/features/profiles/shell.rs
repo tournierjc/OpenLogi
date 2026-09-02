@@ -1,23 +1,21 @@
 //! Reusable profile tabs and feature-independent controls.
 
 use gpui::{
-    App, Entity, InteractiveElement, IntoElement, ParentElement, RenderOnce, Role,
-    StatefulInteractiveElement as _, Styled, Window, div, img, prelude::FluentBuilder as _, px,
+    AnyElement, App, ClickEvent, Context, ElementId, Entity, InteractiveElement, IntoElement,
+    ParentElement, RenderOnce, Role, SharedString, StatefulInteractiveElement as _, Styled, Window,
+    div, img, prelude::FluentBuilder as _, px,
 };
 use gpui_base::Button as BaseButton;
 use gpui_component::{
     Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
     h_flex,
-    popover::Popover,
+    menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
     spinner::Spinner,
 };
 
 use super::catalog::{AppCatalogPicker, AppIconState, ProfileIconCache};
 use super::picker::add_app_popover;
 use super::{ProfileChoice, ProfileScopeActions, ProfileScopeModel};
-use crate::features::mouse::picker::{compact_panel, divider, title};
-use crate::ui::components::MenuRow;
 use crate::ui::theme::{self, Palette, SelectableStyle as _, Typography as _};
 
 /// Icon edge inside single-line profile tabs.
@@ -61,18 +59,6 @@ impl RenderOnce for ProfileScopeShell {
 
 fn profile_scope_content(shell: ProfileScopeShell, pal: Palette) -> impl IntoElement + use<> {
     let default_selected = shell.model.editing_app.is_none();
-    let selected_profile = shell
-        .model
-        .editing_app
-        .as_deref()
-        .and_then(|app| {
-            shell
-                .model
-                .profiles
-                .iter()
-                .find(|profile| profile.app == app)
-        })
-        .cloned();
     let profile_tabs = shell
         .model
         .profiles
@@ -81,8 +67,16 @@ fn profile_scope_content(shell: ProfileScopeShell, pal: Palette) -> impl IntoEle
             let selected = shell.model.editing_app.as_deref() == Some(profile.app.as_str());
             let app = profile.app.clone();
             let actions = shell.actions.clone();
+            let tab_id = format!("{}:app:{}", shell.id_base, profile.app);
+            let remove = profile.persisted.then(|| {
+                (
+                    format!("{tab_id}:remove"),
+                    profile.clone(),
+                    shell.actions.clone(),
+                )
+            });
             profile_tab(
-                format!("{}:app:{}", shell.id_base, profile.app),
+                tab_id,
                 profile.name.clone(),
                 Some(application_mark(
                     shell.icons.state(&profile.app),
@@ -92,10 +86,11 @@ fn profile_scope_content(shell: ProfileScopeShell, pal: Palette) -> impl IntoEle
                 )),
                 selected,
                 pal,
+                remove,
+                move |_event, _window, cx| {
+                    actions.select(Some(app.clone()), cx);
+                },
             )
-            .on_click(move |_event, _window, cx| {
-                actions.select(Some(app.clone()), cx);
-            })
         })
         .collect::<Vec<_>>();
     let default_actions = shell.actions.clone();
@@ -132,10 +127,11 @@ fn profile_scope_content(shell: ProfileScopeShell, pal: Palette) -> impl IntoEle
                         None,
                         default_selected,
                         pal,
-                    )
-                    .on_click(move |_event, _window, cx| {
-                        default_actions.select(None, cx);
-                    }),
+                        None,
+                        move |_event, _window, cx| {
+                            default_actions.select(None, cx);
+                        },
+                    ),
                 )
                 .children(profile_tabs),
         )
@@ -144,31 +140,26 @@ fn profile_scope_content(shell: ProfileScopeShell, pal: Palette) -> impl IntoEle
             shell.model.choices,
             shell.catalog,
             shell.icons,
-            shell.actions.clone(),
+            shell.actions,
             pal,
         ))
-        .when_some(
-            selected_profile.filter(|profile| profile.persisted),
-            |row, profile| {
-                row.child(profile_options_popover(
-                    shell.id_base,
-                    profile,
-                    shell.actions,
-                    pal,
-                ))
-            },
-        )
 }
 
 fn profile_tab(
-    id: impl Into<gpui::ElementId>,
-    label: impl Into<gpui::SharedString>,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
     leading: Option<gpui::Div>,
     selected: bool,
     pal: Palette,
-) -> BaseButton {
+    remove: Option<(String, ProfileChoice, ProfileScopeActions)>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
     let label = label.into();
-    BaseButton::new(id)
+    let has_remove = remove.is_some();
+    let context_menu = remove.as_ref().map(|(_, profile, actions)| {
+        profile_remove_context_menu(profile.clone(), actions.clone())
+    });
+    let tab = BaseButton::new(id)
         .role(Role::Tab)
         .selected(selected)
         .accessibility_label(label.clone())
@@ -178,7 +169,8 @@ fn profile_tab(
         .items_center()
         .gap_1p5()
         .h(px(theme::CONTROL_H))
-        .px_2p5()
+        .when(has_remove, |tab| tab.pl_2p5().pr_1())
+        .when(!has_remove, |tab| tab.px_2p5())
         .rounded(pal.control_radius)
         .cursor_pointer()
         .text_body()
@@ -199,7 +191,65 @@ fn profile_tab(
             })
         })
         .children(leading)
-        .child(label)
+        .child({
+            let remove_label = label.clone();
+            if let Some((delete_id, profile, actions)) = &remove {
+                let profile_for_button = profile.clone();
+                let actions_for_button = actions.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(label)
+                    .child(
+                        BaseButton::new(delete_id.clone())
+                            .accessibility_label(tr!(
+                                "Remove %{name}",
+                                name => remove_label.to_string()
+                            ))
+                            .px_0p5()
+                            .rounded(pal.control_radius)
+                            .text_color(pal.text_muted)
+                            .hover(|button| button.text_color(pal.text_primary))
+                            .focus_visible(|button| button.text_color(pal.text_primary))
+                            .child(Icon::new(IconName::Close).size_3())
+                            .on_click(move |_event, window, cx| {
+                                cx.stop_propagation();
+                                actions_for_button.remove(profile_for_button.clone(), window, cx);
+                            }),
+                    )
+            } else {
+                div().child(label)
+            }
+        })
+        .on_click(on_click);
+
+    if let Some(menu) = context_menu {
+        div()
+            .flex_none()
+            .child(tab)
+            .context_menu(menu)
+            .into_any_element()
+    } else {
+        div().flex_none().child(tab).into_any_element()
+    }
+}
+
+fn profile_remove_context_menu(
+    profile: ProfileChoice,
+    actions: ProfileScopeActions,
+) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + Clone + 'static {
+    move |menu, _window, _cx| {
+        let profile = profile.clone();
+        let actions = actions.clone();
+        menu.item(
+            PopupMenuItem::new(tr!("Remove profile…"))
+                .icon(IconName::Close)
+                .on_click(move |_, window, cx| {
+                    actions.remove(profile.clone(), window, cx);
+                }),
+        )
+    }
 }
 
 pub(super) fn application_mark(
@@ -238,49 +288,4 @@ pub(super) fn application_mark(
                 .child(initial)
         }
     }
-}
-
-fn profile_options_popover(
-    id_base: &'static str,
-    profile: ProfileChoice,
-    actions: ProfileScopeActions,
-    pal: Palette,
-) -> impl IntoElement {
-    Popover::new(format!("{id_base}:profile-options-popover"))
-        .anchor(gpui::Anchor::TopRight)
-        // `compact_panel` is the surface; the popover chrome would wrap it in
-        // a second padded, differently-rounded box.
-        .appearance(false)
-        .trigger(
-            Button::new(format!("{id_base}:profile-options"))
-                .ghost()
-                .xsmall()
-                .icon(IconName::Ellipsis),
-        )
-        .content(move |_state, _window, cx| {
-            let popover = cx.entity().downgrade();
-            let profile = profile.clone();
-            let actions = actions.clone();
-            compact_panel(pal)
-                .w(px(224.))
-                .child(title(tr!("Profile options"), pal))
-                .child(divider(pal))
-                .child(
-                    MenuRow::new(format!("{id_base}:remove-profile"))
-                        .role(Role::MenuItem)
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .gap_2()
-                                .child(Icon::new(IconName::Close).size_4())
-                                .child(tr!("Remove profile…")),
-                        )
-                        .on_click(move |_event, window, cx| {
-                            if let Some(popover) = popover.upgrade() {
-                                popover.update(cx, |state, cx| state.dismiss(window, cx));
-                            }
-                            actions.remove(profile.clone(), window, cx);
-                        }),
-                )
-        })
 }

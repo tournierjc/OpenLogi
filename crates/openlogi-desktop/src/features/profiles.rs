@@ -101,8 +101,13 @@ pub(crate) fn device_profile_scope_bar(
     let model = profile_scope_model(editing_app, profiles, &recent_apps, catalog, cx);
     let actions = ProfileScopeActions::new(
         |app, cx| {
-            AppState::update_bindings(cx, |state| {
+            AppState::update(cx, |state, cx| {
+                let key = state.current_record().map(DeviceRecord::device_key);
                 state.set_editing_app(app);
+                if let Some(key) = key {
+                    cx.emit(StateEvent::BindingsChanged(key.clone()));
+                    cx.emit(StateEvent::DeviceConfigChanged(key));
+                }
             });
         },
         |profile, window, cx| open_remove_confirmation(window, cx, &profile),
