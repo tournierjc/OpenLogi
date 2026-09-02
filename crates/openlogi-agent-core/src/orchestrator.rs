@@ -31,7 +31,7 @@ use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::action_ring::ActionRingSessionSpec;
-use crate::capture_plan::{DeviceCapturePlan, SharedCapturePlans, plan_for_device};
+use crate::capture_plan::{DeviceCapturePlan, SharedCapturePlans, hidpp_side_gesture_maps_for, plan_for_device};
 use crate::hardware::DeviceOp;
 use crate::observable::ObservableState;
 use crate::receiver_access::ReceiverAccess;
@@ -299,9 +299,39 @@ impl Orchestrator {
         if key.is_some_and(|k| !self.config.device_enabled(k)) {
             return HookMaps::default();
         }
+        let mut bindings = button_bindings_for(&self.config, key, app);
+        let mut gestures = oshook_gestures_for(&self.config, key, app);
+        if let Some(key) = key {
+            for button in hidpp_side_gesture_maps_for(&self.config, key, app).keys() {
+                // HID++ owns both edges for these controls. Keeping their
+                // projected click or gesture map in the global hook would
+                // reintroduce a second, unattributed dispatch path.
+                bindings.remove(button);
+                gestures.remove(button);
+            }
+        }
         HookMaps {
-            bindings: button_bindings_for(&self.config, key, app),
-            gestures: oshook_gestures_for(&self.config, key, app),
+            bindings,
+            gestures,
+            selected_device: key.map(str::to_owned),
+            ..HookMaps::default()
+        }
+    }
+
+    /// Publish hook maps while preserving thumb-wheel polarities learned from
+    /// hardware capture sessions. Selection, polarity, and bindings share the
+    /// one lock the callback reads, so a device switch cannot combine facts
+    /// from two devices.
+    fn publish_hook_maps(&self, mut maps: HookMaps) {
+        match self.shared.hook_maps.write() {
+            Ok(mut current) => {
+                maps.thumbwheel_positive_is_forward =
+                    std::mem::take(&mut current.thumbwheel_positive_is_forward);
+                *current = maps;
+            }
+            Err(error) => {
+                warn!(%error, lock = "hook_maps", "lock poisoned — keeping stale value");
+            }
         }
     }
 
@@ -358,11 +388,7 @@ impl Orchestrator {
         );
         // One write publishes both hook maps atomically, so a button press during
         // an owner switch can't observe a half-updated state.
-        write_value(
-            &self.shared.hook_maps,
-            self.hook_maps_for(key, app),
-            "hook_maps",
-        );
+        self.publish_hook_maps(self.hook_maps_for(key, app));
         self.publish_device_runtime();
     }
 
@@ -841,15 +867,11 @@ impl Orchestrator {
         self.observable
             .set_app_profile_overrides(&self.app_profile_override);
         self.current_app = id;
-        write_value(
-            &self.shared.hook_maps,
-            self.hook_maps_for(
-                self.current_key(),
-                self.current_key()
-                    .and_then(|key| self.effective_app_for(key)),
-            ),
-            "hook_maps",
-        );
+        self.publish_hook_maps(self.hook_maps_for(
+            self.current_key(),
+            self.current_key()
+                .and_then(|key| self.effective_app_for(key)),
+        ));
         // Capture plans are app-scoped (per-app binding overlays); republish
         // them with the keyboard's effective bindings.
         self.publish_device_runtime();
@@ -1043,14 +1065,10 @@ impl Orchestrator {
         self.publish_capture_plans();
         publish_optional_arc_if_changed(&self.keyboard_spec_tx, self.keyboard_spec_for());
         if self.current_key() == Some(device_key) {
-            write_value(
-                &self.shared.hook_maps,
-                self.hook_maps_for(
-                    Some(device_key),
-                    self.effective_app_for(device_key),
-                ),
-                "hook_maps",
-            );
+            self.publish_hook_maps(self.hook_maps_for(
+                Some(device_key),
+                self.effective_app_for(device_key),
+            ));
         }
         if let Some(dev) = self
             .devices

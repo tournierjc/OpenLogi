@@ -287,12 +287,12 @@ macro_rules! for_each_unit_action {
             VolumeDown "Volume Down" "actions.volume_down" Media VolumeDown,
             MuteVolume "Mute" "actions.mute" Media Mute,
             // DPI
-            CycleDpiPresets "Cycle DPI Presets" Dpi Gauge,
-            NextDpiPreset "DPI Up" Dpi Gauge,
-            PrevDpiPreset "DPI Down" Dpi Gauge,
-            CycleOnboardProfile "Cycle Onboard Profile" Dpi Refresh,
-            CycleAppProfile "Cycle App Profile" Dpi Refresh,
-            ToggleSmartShift "Toggle SmartShift" Dpi Refresh,
+            CycleDpiPresets "Cycle DPI Presets" "pointer.cycle_dpi_presets" Dpi Gauge,
+            NextDpiPreset "DPI Up" "pointer.dpi_up" Dpi Gauge,
+            PrevDpiPreset "DPI Down" "pointer.dpi_down" Dpi Gauge,
+            CycleOnboardProfile "Cycle Onboard Profile" "pointer.cycle_onboard_profile" Dpi Refresh,
+            CycleAppProfile "Cycle App Profile" "pointer.cycle_app_profile" Dpi Refresh,
+            ToggleSmartShift "Toggle SmartShift" "pointer.toggle_smartshift" Dpi Refresh,
             // Scroll
             ScrollUp "Scroll Up" "actions.scroll_up" Scroll ArrowUp,
             ScrollDown "Scroll Down" "actions.scroll_down" Scroll ArrowDown,

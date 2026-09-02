@@ -22,6 +22,7 @@ use openlogi_ui::action_icons::RING_CANCEL_ICON;
 use self::action_icons::action_icon_path;
 use self::editor::action_library;
 use crate::state::{AppState, DeviceRecord, StateEvent};
+use crate::ui::action::localized_action_label;
 use crate::ui::shortcut_capture::ShortcutCapture;
 use crate::ui::theme::{self, Palette, Typography as _};
 
