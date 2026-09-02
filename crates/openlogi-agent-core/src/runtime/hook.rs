@@ -240,7 +240,7 @@ fn handle_button(
     dispatcher: &ActionDispatcher,
 ) -> EventDisposition {
     // Primary L/R always pass through (suppressing them would brick the mouse).
-    if !id.is_os_hook_button() || !button_source_may_remap(device) {
+    if !id.is_hook_dispatch_button() || !button_source_may_remap(device) {
         return EventDisposition::PassThrough;
     }
 

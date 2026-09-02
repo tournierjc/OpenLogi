@@ -196,6 +196,12 @@ impl AppState {
         if let Some(outcome) =
             smartshift_write_outcome(expected, self.pointer.reads.smartshift_load(key))
         {
+            if outcome == ConfirmationOutcome::Failed {
+                // A confirming read can land before a concurrent config reload
+                // finishes re-applying volatile settings — keep the committed
+                // value visible instead of reverting to stale device RAM.
+                self.pointer.reads.set_smartshift_ready(key, expected);
+            }
             self.devices
                 .runtime
                 .entry(key.clone())

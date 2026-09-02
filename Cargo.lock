@@ -6140,6 +6140,7 @@ dependencies = [
  "succession",
  "tarpc",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

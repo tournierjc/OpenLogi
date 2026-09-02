@@ -106,6 +106,18 @@ impl AppState {
             return;
         }
         if let Some(DpiStatus::Ready(info)) = self.pointer.reads.dpi_load(key) {
+            if let Some(configured) = self.current_record().and_then(|record| {
+                record
+                    .persistent_config_key()
+                    .and_then(|pk| self.config.devices.get(pk))
+                    .and_then(|device| {
+                        device.effective_dpi_for_app(&record.route_key, self.editing_app())
+                    })
+            }) && configured != info.current
+                && self.pointer.dpi == configured
+            {
+                return;
+            }
             self.pointer.dpi = info.current;
         }
     }
@@ -166,6 +178,9 @@ impl AppState {
         }
         if let Some(route) = route {
             self.send_ipc(crate::services::ipc::Command::SetDpi(route, dpi));
+        }
+        if let Some(key) = self.current_record().map(DeviceRecord::device_key) {
+            self.pointer.reads.set_dpi_ready(&key, dpi);
         }
     }
 

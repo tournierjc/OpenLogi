@@ -1,5 +1,7 @@
 //! Agent connection status and debug monitor state.
 
+use std::collections::BTreeMap;
+
 use openlogi_core::device::DeviceInventory;
 use openlogi_ipc::ForegroundApps;
 
@@ -9,6 +11,7 @@ use super::{AgentLink, AppState};
 pub(super) struct AgentSession {
     link: AgentLink,
     foreground: ForegroundApps,
+    app_profile_overrides: BTreeMap<String, Option<String>>,
     last_ready_inventory: Vec<DeviceInventory>,
     #[cfg(all(target_os = "macos", debug_assertions))]
     monitor_events: std::collections::VecDeque<openlogi_ipc::MonitorEvent>,
@@ -21,6 +24,7 @@ impl Default for AgentSession {
         Self {
             link: AgentLink::Connecting,
             foreground: ForegroundApps::default(),
+            app_profile_overrides: BTreeMap::new(),
             last_ready_inventory: Vec::new(),
             #[cfg(all(target_os = "macos", debug_assertions))]
             monitor_events: std::collections::VecDeque::new(),
@@ -113,5 +117,21 @@ impl AppState {
 
     pub(super) fn foreground(&self) -> &ForegroundApps {
         &self.agent.foreground
+    }
+
+    pub(super) fn app_profile_overrides(&self) -> &BTreeMap<String, Option<String>> {
+        &self.agent.app_profile_overrides
+    }
+
+    /// Adopt the agent's manual profile overrides. Returns whether the map changed.
+    pub fn set_app_profile_overrides(
+        &mut self,
+        overrides: BTreeMap<String, Option<String>>,
+    ) -> bool {
+        if self.agent.app_profile_overrides == overrides {
+            return false;
+        }
+        self.agent.app_profile_overrides = overrides;
+        true
     }
 }

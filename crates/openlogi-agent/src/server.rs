@@ -405,6 +405,23 @@ impl Agent for AgentServer {
             .await
     }
 
+    async fn set_app_profile_override(
+        self,
+        _: Context,
+        device_key: String,
+        profile: Option<String>,
+    ) -> bool {
+        let changed = self
+            .orchestrator
+            .lock()
+            .await
+            .set_app_profile_override(&device_key, profile);
+        if changed {
+            self.dispatcher.cancel_all_buttons();
+        }
+        changed
+    }
+
     async fn action_ring_hover(
         self,
         _: Context,

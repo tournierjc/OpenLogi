@@ -527,6 +527,41 @@ fn a_binding_committed_in_a_per_app_profile_leaves_the_global_one_alone() {
 }
 
 #[test]
+fn switching_editing_profile_updates_button_bindings() {
+    let mut state = state_with_a_known_mouse();
+    state.config.edit(|config| {
+        config.set_binding(
+            KNOWN_MOUSE_KEY,
+            ButtonId::Back,
+            Binding::Single(Action::BrowserBack),
+        );
+        config.set_per_app_binding(
+            KNOWN_MOUSE_KEY,
+            "com.apple.Safari",
+            ButtonId::Back,
+            Some(Action::Undo),
+        );
+    });
+
+    assert_eq!(
+        state.button_bindings().get(&ButtonId::Back),
+        Some(&Action::BrowserBack)
+    );
+
+    state.set_editing_app(Some("com.apple.Safari".into()));
+    assert_eq!(
+        state.button_bindings().get(&ButtonId::Back),
+        Some(&Action::Undo)
+    );
+
+    state.set_editing_app(None);
+    assert_eq!(
+        state.button_bindings().get(&ButtonId::Back),
+        Some(&Action::BrowserBack)
+    );
+}
+
+#[test]
 fn switching_editing_profile_updates_displayed_dpi() {
     let mut state = state_with_a_known_mouse();
     state.config.edit(|config| {

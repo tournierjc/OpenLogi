@@ -339,6 +339,45 @@ pub fn apply_onboard_bindings_in_background(
     );
 }
 
+/// Volatile mouse settings to re-apply after a mode switch or reconnect.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct MouseVolatileSettings {
+    pub resolution: Option<ScrollResolution>,
+    pub inverted: Option<bool>,
+    pub dpi: Option<Dpi>,
+    pub smartshift: Option<SmartShiftStatus>,
+    pub report_rate: Option<openlogi_core::hid::ReportRateHz>,
+}
+
+/// Switch a G-series mouse to host-side button execution so the input hook can
+/// dispatch OpenLogi-only actions such as [`Action::CycleAppProfile`], then
+/// re-apply volatile settings on the same channel so DPI/lighting are not left
+/// at firmware defaults while the device is still transitioning modes.
+pub(crate) fn set_onboard_host_mode_in_background(op: DeviceOp<'_>, volatile: MouseVolatileSettings) {
+    let index = op.route.device_index();
+    op.spawn_write(
+        "onboard host mode",
+        move |shared| async move {
+            openlogi_hid::set_onboard_host_mode_on(&shared).await?;
+            apply_mouse_volatile_on_shared(index, &shared, volatile).await;
+            Ok(())
+        },
+        move |result| match result {
+            Ok(Ok(())) => info!(index, "onboard host mode enabled"),
+            Ok(Err(WriteError::FeatureUnsupported { feature_hex })) => debug!(
+                index,
+                feature = format_args!("{feature_hex:#06x}"),
+                "onboard host mode unsupported"
+            ),
+            Ok(Err(error)) => warn!(error = ?error, index, "onboard host mode failed"),
+            Err(_) => warn!(
+                index,
+                "onboard host mode timed out (device asleep/unresponsive)"
+            ),
+        },
+    );
+}
+
 /// Re-apply every volatile mouse setting for `op`'s device on a **single**
 /// background thread, sequentially, on the current inventory-owned channel.
 ///
@@ -368,6 +407,13 @@ pub fn reapply_mouse_volatile_in_background(
     let receiver_access = op.receiver_access.clone();
     let device_io = op.device_io.clone();
     let index = op.route.device_index();
+    let volatile = MouseVolatileSettings {
+        resolution,
+        inverted,
+        dpi,
+        smartshift,
+        report_rate,
+    };
     std::thread::spawn(move || {
         let Some(rt) = one_shot_runtime("volatile reapply") else {
             return;
@@ -381,63 +427,72 @@ pub fn reapply_mouse_volatile_in_background(
                 );
                 return;
             }
-            if resolution.is_some() || inverted.is_some() {
-                let result = tokio::time::timeout(WRITE_BUDGET, async {
-                    apply_wheel_mode(&shared, resolution, inverted).await
-                })
-                .await;
-                log_wheel_result(index, resolution, inverted, result);
-            }
-            if let Some(dpi) = dpi {
-                let result = tokio::time::timeout(WRITE_BUDGET, async {
-                    openlogi_hid::set_dpi_on(&shared, dpi).await
-                })
-                .await;
-                match result {
-                    Ok(Ok(())) => {
-                        debug!(index, %dpi, "DPI written to device");
-                    }
-                    Ok(Err(e)) => warn!(error = ?e, "DPI write failed"),
-                    Err(_) => warn!(
-                        %dpi,
-                        "DPI write timed out (device asleep/unresponsive)"
-                    ),
-                }
-            }
-            if let Some(ss) = smartshift {
-                let result = tokio::time::timeout(WRITE_BUDGET, async {
-                    openlogi_hid::set_smartshift_on(&shared, ss).await
-                })
-                .await;
-                match result {
-                    Ok(Ok(())) => debug!(
-                        index,
-                        status = ?ss,
-                        "SmartShift config written"
-                    ),
-                    Ok(Err(e)) => warn!(error = ?e, "SmartShift write failed"),
-                    Err(_) => warn!(
-                        index,
-                        "SmartShift write timed out (device asleep/unresponsive)"
-                    ),
-                }
-            }
-            if let Some(rate) = report_rate {
-                let result = tokio::time::timeout(WRITE_BUDGET, async {
-                    openlogi_hid::set_report_rate_on(&shared, rate).await
-                })
-                .await;
-                match result {
-                    Ok(Ok(())) => debug!(index, %rate, "report rate written to device"),
-                    Ok(Err(e)) => warn!(error = ?e, "report rate write failed"),
-                    Err(_) => warn!(
-                        %rate,
-                        "report rate write timed out (device asleep/unresponsive)"
-                    ),
-                }
-            }
+            apply_mouse_volatile_on_shared(index, &shared, volatile).await;
         });
     });
+}
+
+async fn apply_mouse_volatile_on_shared(
+    index: u8,
+    shared: &SharedChannel,
+    volatile: MouseVolatileSettings,
+) {
+    let MouseVolatileSettings {
+        resolution,
+        inverted,
+        dpi,
+        smartshift,
+        report_rate,
+    } = volatile;
+    if resolution.is_some() || inverted.is_some() {
+        let result = tokio::time::timeout(WRITE_BUDGET, async {
+            apply_wheel_mode(shared, resolution, inverted).await
+        })
+        .await;
+        log_wheel_result(index, resolution, inverted, result);
+    }
+    if let Some(dpi) = dpi {
+        let result = tokio::time::timeout(WRITE_BUDGET, async {
+            openlogi_hid::set_dpi_on(shared, dpi).await
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => debug!(index, %dpi, "DPI written to device"),
+            Ok(Err(e)) => warn!(error = ?e, "DPI write failed"),
+            Err(_) => warn!(
+                %dpi,
+                "DPI write timed out (device asleep/unresponsive)"
+            ),
+        }
+    }
+    if let Some(ss) = smartshift {
+        let result = tokio::time::timeout(WRITE_BUDGET, async {
+            openlogi_hid::set_smartshift_on(shared, ss).await
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => debug!(index, status = ?ss, "SmartShift config written"),
+            Ok(Err(e)) => warn!(error = ?e, "SmartShift write failed"),
+            Err(_) => warn!(
+                index,
+                "SmartShift write timed out (device asleep/unresponsive)"
+            ),
+        }
+    }
+    if let Some(rate) = report_rate {
+        let result = tokio::time::timeout(WRITE_BUDGET, async {
+            openlogi_hid::set_report_rate_on(shared, rate).await
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => debug!(index, %rate, "report rate written to device"),
+            Ok(Err(e)) => warn!(error = ?e, "report rate write failed"),
+            Err(_) => warn!(
+                %rate,
+                "report rate write timed out (device asleep/unresponsive)"
+            ),
+        }
+    }
 }
 
 async fn apply_wheel_mode(

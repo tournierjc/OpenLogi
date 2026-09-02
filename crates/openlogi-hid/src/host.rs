@@ -277,6 +277,11 @@ pub async fn cycle_onboard_profile_on(shared: &SharedChannel) -> Result<u8, Writ
     device::cycle_onboard_profile_on(shared).await
 }
 
+/// Route button remapping through the host hook instead of onboard flash.
+pub async fn set_onboard_host_mode_on(shared: &SharedChannel) -> Result<(), WriteError> {
+    device::set_onboard_host_mode_on(shared).await
+}
+
 /// Read the raw battery report of the device `route` reaches.
 pub async fn read_battery_raw(route: &DeviceRoute) -> Result<String, WriteError> {
     device::read_battery_raw(&*native_backend(), route).await

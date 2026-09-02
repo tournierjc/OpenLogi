@@ -330,6 +330,10 @@ impl Runtime {
                         state.set_agent_link(state::AgentLink::Ready(snapshot.status.clone()));
                     let camera_changed = state.set_camera_active(snapshot.camera_active);
                     let foreground_changed = state.set_foreground(snapshot.foreground.clone());
+                    let profile_scope_changed = state
+                        .adopt_agent_app_profile_overrides(snapshot.app_profile_overrides.clone())
+                        .is_some()
+                        || (foreground_changed && state.sync_editing_app_from_agent().is_some());
                     if merged {
                         cx.emit(StateEvent::InventoryChanged);
                     }
@@ -341,6 +345,19 @@ impl Runtime {
                     }
                     if foreground_changed {
                         cx.emit(StateEvent::ForegroundChanged);
+                    }
+                    if profile_scope_changed {
+                        if let Some(key) = state
+                            .current_record()
+                            .map(|record| record.device_key())
+                        {
+                            cx.emit(StateEvent::BindingsChanged(key.clone()));
+                            cx.emit(StateEvent::DeviceConfigChanged(key.clone()));
+                            cx.emit(StateEvent::DpiChanged(key.clone()));
+                            cx.emit(StateEvent::ReportRateChanged(key.clone()));
+                            cx.emit(StateEvent::SmartShiftChanged(key.clone()));
+                            cx.emit(StateEvent::LightingChanged(key));
+                        }
                     }
                     let settings = state.app_settings();
                     (

@@ -58,7 +58,33 @@ pub fn button_bindings_for(
         }
         bindings.insert(button, binding);
     }
+    pin_global_profile_cycle_button(config, config_key, &mut bindings);
     bindings
+}
+
+/// When the device-level profile-cycle slot is [`Action::CycleAppProfile`],
+/// keep that action on the physical cycle button even if the active app
+/// profile overrides the slot (e.g. Ark's `ProfileCycle → P`). Otherwise the
+/// first manual cycle replaces cycling with a shortcut and the button spams
+/// keys into the focused app — including the OpenLogi window.
+fn pin_global_profile_cycle_button(
+    config: &Config,
+    config_key: Option<&str>,
+    bindings: &mut BTreeMap<ButtonId, Binding>,
+) {
+    let Some(key) = config_key else {
+        return;
+    };
+    let Some(global) = config
+        .devices
+        .get(key)
+        .and_then(|device| device.bindings.get(&ButtonId::ProfileCycle))
+    else {
+        return;
+    };
+    if global.click_action() == Action::CycleAppProfile {
+        bindings.insert(ButtonId::ProfileCycle, global.clone());
+    }
 }
 
 /// Per-direction maps for every HID++ gesture source (the dedicated gesture
@@ -144,6 +170,38 @@ mod tests {
     use crate::binding::{LongPressBinding, default_gesture_binding};
 
     use super::*;
+
+    #[test]
+    fn profile_cycle_stays_global_when_per_app_overrides_the_slot() {
+        let mut cfg = Config::default();
+        cfg.set_binding(
+            "mouse",
+            ButtonId::ProfileCycle,
+            Binding::Single(Action::CycleAppProfile),
+        );
+        cfg.set_per_app_binding(
+            "mouse",
+            "org.kde.ark",
+            ButtonId::ProfileCycle,
+            Some(Action::CustomShortcut("P".parse().expect("parse"))),
+        );
+
+        let default_maps = button_bindings_for(&cfg, Some("mouse"), None);
+        assert_eq!(
+            default_maps
+                .get(&ButtonId::ProfileCycle)
+                .map(Binding::click_action),
+            Some(Action::CycleAppProfile)
+        );
+
+        let ark_maps = button_bindings_for(&cfg, Some("mouse"), Some("org.kde.ark"));
+        assert_eq!(
+            ark_maps
+                .get(&ButtonId::ProfileCycle)
+                .map(Binding::click_action),
+            Some(Action::CycleAppProfile)
+        );
+    }
 
     #[test]
     fn click_less_gesture_keeps_default_click_in_projection() {

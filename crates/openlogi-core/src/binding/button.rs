@@ -137,6 +137,31 @@ impl ButtonId {
         )
     }
 
+    /// Buttons the OS input hook may remap on G-series gaming mice in host
+    /// mode. Those devices expose DPI and profile-switch controls as extra
+    /// evdev `BTN_*` codes on the mouse node (see `openlogi-hook` Linux
+    /// `key_to_button`). MX-class mice keep those on HID++ capture instead.
+    #[must_use]
+    pub fn is_g_series_hook_button(self) -> bool {
+        matches!(
+            self,
+            ButtonId::DpiToggle
+                | ButtonId::DpiUp
+                | ButtonId::DpiDown
+                | ButtonId::ProfileCycle
+                | ButtonId::WheelTiltLeft
+                | ButtonId::WheelTiltRight
+        )
+    }
+
+    /// Whether the OS hook may dispatch a binding for this button.
+    #[must_use]
+    pub fn is_hook_dispatch_button(self) -> bool {
+        matches!(self, ButtonId::LeftClick | ButtonId::RightClick)
+            || self.is_os_hook_button()
+            || self.is_g_series_hook_button()
+    }
+
     /// Whether this button is a HID++ gesture source — a control that is
     /// captured over HID++ raw-XY diversion (never the OS hook) and can
     /// therefore own the gesture role with swipe directions: the dedicated

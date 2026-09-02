@@ -24,7 +24,7 @@ use openlogi_core::device::{
 use openlogi_core::device_order::{DeviceIdentity, DeviceStableId, PhysicalDeviceKey};
 use openlogi_hid::{
     CaptureChannel, ChannelPool, ChannelRegistry, DIRECT_DEVICE_INDEX, DeviceIoGate, DeviceRoute,
-    KEYBOARD_KEY_CIDS,
+    KEYBOARD_KEY_CIDS, is_onboard_encodable,
 };
 use openlogi_ipc::InventoryHealth;
 use tokio::sync::watch;
@@ -73,6 +73,10 @@ pub struct SharedRuntime {
     /// rebuild publishes both atomically (see [`HookMaps`]). Also read by the
     /// gesture watcher for the thumb-wheel/DPI-button single actions.
     pub hook_maps: SharedHookMaps,
+    /// Config key of the mouse whose bindings [`Self::hook_maps`] currently
+    /// carry. OS-hook presses have no per-event device identity, so actions
+    /// such as [`Action::CycleAppProfile`] resolve against this key.
+    pub hook_device_key: Arc<RwLock<Option<Arc<str>>>>,
     /// Function-key remapper bindings (keycode+modifiers → action). Not
     /// per-app-profile in M1 (spec non-goal), so a single shared map.
     pub keyboard_bindings: crate::runtime::hook::SharedKeyboardBindings,
@@ -218,6 +222,7 @@ impl Orchestrator {
         let (host_switch_links_tx, host_switch_links) = watch::channel(Arc::new(Vec::new()));
         let shared = SharedRuntime {
             hook_maps: Arc::new(RwLock::new(HookMaps::default())),
+            hook_device_key: Arc::new(RwLock::new(None)),
             keyboard_bindings: Arc::new(RwLock::new(config.keyboard.bindings.clone())),
             scroll_preferences: Arc::new(ScrollPreferences::new(
                 config.app_settings.smooth_scroll,
@@ -346,6 +351,11 @@ impl Orchestrator {
     fn rebuild(&self) {
         let key = self.current_key();
         let app = key.and_then(|device_key| self.effective_app_for(device_key));
+        write_value(
+            &self.shared.hook_device_key,
+            key.map(Arc::from),
+            "hook_device_key",
+        );
         // One write publishes both hook maps atomically, so a button press during
         // an owner switch can't observe a half-updated state.
         write_value(
@@ -524,6 +534,7 @@ impl Orchestrator {
         self.devices = devices;
         self.current = next_current;
         self.rebuild();
+        self.apply_onboard_profiles();
     }
 
     /// Whether volatile-setting writes still need a delayed inventory pass to
@@ -558,7 +569,7 @@ impl Orchestrator {
         let key = &dev.config_key;
         let route_key = stable_id(dev).route_key();
         let device = self.config.devices.get(key.as_str());
-        let app = self.current_app.as_deref();
+        let app = self.effective_app_for(key);
         let (resolution, inverted) = configured_wheel_mode(&self.config, dev, app);
         let dpi = device.and_then(|d| d.effective_dpi_for_app(&route_key, app));
         let smartshift = device
@@ -822,10 +833,13 @@ impl Orchestrator {
     pub fn set_current_app(&mut self, app: Option<ForegroundApp>) -> bool {
         let id = app.as_ref().map(|app| app.id.clone());
         self.observable.set_foreground(app);
-        self.app_profile_override.clear();
         if id == self.current_app {
             return false;
         }
+        // A real focus change supersedes a manual Cycle App Profile choice.
+        self.app_profile_override.clear();
+        self.observable
+            .set_app_profile_overrides(&self.app_profile_override);
         self.current_app = id;
         write_value(
             &self.shared.hook_maps,
@@ -907,9 +921,11 @@ impl Orchestrator {
         }
     }
 
-    /// Push committed button bindings into G-series onboard flash (`0x8100`).
-    /// Only stored overrides are written, so a first connect leaves firmware
-    /// mappings intact. MX-class mice lack the feature and skip the write.
+    /// Push committed button bindings into G-series onboard flash (`0x8100`),
+    /// or switch the device to host mode when OpenLogi must own dispatch —
+    /// per-app profiles, [`Action::CycleAppProfile`], and other actions the
+    /// onboard table cannot represent all require the input hook. MX-class mice
+    /// lack the feature and skip the write.
     fn apply_onboard_profiles(&self) {
         for dev in self.devices.iter().filter(|dev| {
             dev.online
@@ -919,9 +935,27 @@ impl Orchestrator {
             let Some(route) = dev.route.clone() else {
                 continue;
             };
-            let stored = self
-                .config
-                .effective_bindings(&dev.config_key, self.effective_app_for(&dev.config_key));
+            let op = self.shared.device(&route);
+            if onboard_profile_needs_host_mode(&self.config, &dev.config_key) {
+                let key = &dev.config_key;
+                let route_key = stable_id(dev).route_key();
+                let device = self.config.devices.get(key.as_str());
+                let app = self.effective_app_for(key);
+                let (resolution, inverted) = configured_wheel_mode(&self.config, dev, app);
+                let volatile = crate::hardware::MouseVolatileSettings {
+                    resolution,
+                    inverted,
+                    dpi: device.and_then(|d| d.effective_dpi_for_app(&route_key, app)),
+                    smartshift: device
+                        .and_then(|d| d.effective_smartshift_for_app(&route_key, app))
+                        .map(openlogi_hid::SmartShiftStatus::from),
+                    report_rate: device
+                        .and_then(|d| d.effective_report_rate_for_app(&route_key, app)),
+                };
+                crate::hardware::set_onboard_host_mode_in_background(op, volatile);
+                continue;
+            }
+            let stored = self.config.effective_bindings(&dev.config_key, None);
             if stored.is_empty() {
                 continue;
             }
@@ -929,10 +963,7 @@ impl Orchestrator {
                 .into_iter()
                 .map(|(button, binding)| (button, binding.click_action()))
                 .collect();
-            crate::hardware::apply_onboard_bindings_in_background(
-                self.shared.device(&route),
-                bindings,
-            );
+            crate::hardware::apply_onboard_bindings_in_background(op, bindings);
         }
     }
 
@@ -994,9 +1025,21 @@ impl Orchestrator {
             .position(|profile| *profile == current)
             .unwrap_or(0);
         let next = profiles[(idx + 1) % profiles.len()].clone();
+        self.set_app_profile_override(device_key, next)
+    }
+
+    /// Pin or clear the manual application-profile override for `device_key`.
+    pub fn set_app_profile_override(&mut self, device_key: &str, profile: Option<String>) -> bool {
         self.app_profile_override
-            .insert(device_key.to_string(), next.clone());
-        tracing::info!(device_key, profile = ?next, "cycled application profile");
+            .insert(device_key.to_string(), profile.clone());
+        tracing::info!(device_key, profile = ?profile, "set application profile override");
+        self.observable
+            .set_app_profile_overrides(&self.app_profile_override);
+        self.republish_app_profile_effects(device_key);
+        true
+    }
+
+    fn republish_app_profile_effects(&mut self, device_key: &str) {
         self.publish_capture_plans();
         publish_optional_arc_if_changed(&self.keyboard_spec_tx, self.keyboard_spec_for());
         if self.current_key() == Some(device_key) {
@@ -1016,8 +1059,21 @@ impl Orchestrator {
         {
             self.reapply_volatile_settings(dev);
         }
-        true
     }
+}
+
+/// G-series onboard flash can only store one static table. Host mode is required
+/// only when a **global** binding uses an action the firmware cannot encode
+/// (e.g. [`Action::CycleAppProfile`]). Per-app overrides are merged at runtime
+/// by the input hook and do not require leaving onboard mode — doing so breaks
+/// primary clicks on some G-series mice (G502 host mode + evdev grab).
+fn onboard_profile_needs_host_mode(config: &Config, device_key: &str) -> bool {
+    let Some(device) = config.devices.get(device_key) else {
+        return false;
+    };
+    device.bindings.values().any(|binding| {
+        !is_onboard_encodable(&binding.click_action())
+    })
 }
 
 /// Resolve the two independently-gated HiResWheel settings for one device.

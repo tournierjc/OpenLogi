@@ -139,6 +139,7 @@ impl InputServices {
             shared.device_io.clone(),
             ring_sender,
             app_profile_sender,
+            shared.hook_device_key.clone(),
         ) {
             Ok(runtime) => runtime,
             Err(e) => {

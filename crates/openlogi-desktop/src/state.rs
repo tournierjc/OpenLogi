@@ -492,10 +492,37 @@ impl AppState {
         let key = self
             .current_record()
             .and_then(DeviceRecord::persistent_config_key)?;
+        if self.app_profile_overrides().contains_key(key) {
+            return self
+                .editing_app()
+                .and_then(|app| self.recent_app_name(app));
+        }
         let app = self.profile_app()?;
         self.config
             .has_app_override(key, &app.id)
             .then_some(app.display_name.as_str())
+    }
+
+    /// Resolved profile scope for `config_key`: a manual override from the
+    /// agent when present, otherwise a foreground app that has saved overrides.
+    fn profile_scope_from_agent(&self, config_key: &str) -> Option<String> {
+        if let Some(app) = self.app_profile_overrides().get(config_key) {
+            return app.clone();
+        }
+        self.profile_app()
+            .filter(|app| self.config.has_app_override(config_key, &app.id))
+            .map(|app| app.id.clone())
+    }
+
+    /// Mirror manual profile overrides from the agent into the editor scope.
+    pub fn adopt_agent_app_profile_overrides(
+        &mut self,
+        overrides: BTreeMap<String, Option<String>>,
+    ) -> Option<DeviceKey> {
+        if !self.set_app_profile_overrides(overrides) {
+            return None;
+        }
+        self.sync_editing_app_from_agent()
     }
 }
 

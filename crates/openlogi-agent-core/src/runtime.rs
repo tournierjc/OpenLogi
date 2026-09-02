@@ -67,10 +67,24 @@ struct ActionExecutor {
     device_io: DeviceIoGate,
     action_ring: tokio::sync::mpsc::UnboundedSender<Option<String>>,
     app_profile_cycle: tokio::sync::mpsc::UnboundedSender<String>,
+    /// Selected mouse config key for OS-hook presses, which carry no device
+    /// identity on their own (unlike HID++ capture sessions).
+    hook_device_key: Arc<RwLock<Option<Arc<str>>>>,
 }
 
 impl ActionExecutor {
+    fn resolve_device_key(&self, device_key: Option<&str>) -> Option<String> {
+        device_key.map(str::to_owned).or_else(|| {
+            self.hook_device_key
+                .read()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|key| key.to_string()))
+        })
+    }
+
     fn dispatch(&self, action: &Action, device_key: Option<&str>) {
+        let device_key = self.resolve_device_key(device_key);
+        let device_key = device_key.as_deref();
         if matches!(action, Action::ShowActionsRing) {
             if self
                 .action_ring
@@ -252,6 +266,7 @@ impl ActionRuntime {
         device_io: DeviceIoGate,
         action_ring: tokio::sync::mpsc::UnboundedSender<Option<String>>,
         app_profile_cycle: tokio::sync::mpsc::UnboundedSender<String>,
+        hook_device_key: Arc<RwLock<Option<Arc<str>>>>,
     ) -> io::Result<Self> {
         let executor = ActionExecutor {
             dpi_cycle,
@@ -261,6 +276,7 @@ impl ActionRuntime {
             device_io,
             action_ring,
             app_profile_cycle,
+            hook_device_key,
         };
         let mut button_handler = ButtonEventHandler::new(executor.clone());
         let buttons = ButtonRuntimeOwner::spawn(move |event| button_handler.handle(event))?;

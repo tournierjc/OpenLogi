@@ -539,6 +539,13 @@ fn wheel_tilt_defaults_to_the_scroll_its_firmware_already_does() {
         assert!(!tilt.is_os_hook_button());
         assert!(!tilt.is_hidpp_gesture_source());
     }
+    assert!(ButtonId::ProfileCycle.is_g_series_hook_button());
+    assert!(ButtonId::ProfileCycle.is_hook_dispatch_button());
+    assert!(ButtonId::WheelTiltLeft.is_g_series_hook_button());
+    assert!(ButtonId::WheelTiltRight.is_g_series_hook_button());
+    assert!(ButtonId::WheelTiltLeft.is_hook_dispatch_button());
+    assert!(ButtonId::LeftClick.is_hook_dispatch_button());
+    assert!(ButtonId::RightClick.is_hook_dispatch_button());
 }
 
 // ── Effect classification ─────────────────────────────────────────────────

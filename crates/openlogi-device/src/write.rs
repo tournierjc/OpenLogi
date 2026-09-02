@@ -64,9 +64,10 @@ pub use litra::{
 pub use onboard::{
     ButtonBinding, OnboardButtonSlot, OnboardMode, OnboardProfilesDump, ProfileDirectoryEntry,
     ProfilesDescription, apply_onboard_button_bindings, apply_onboard_button_bindings_on,
-    dump_onboard_profiles, dump_onboard_profiles_on, read_onboard_button_bindings,
+    cycle_onboard_profile, cycle_onboard_profile_on, dump_onboard_profiles,
+    dump_onboard_profiles_on, is_onboard_encodable, read_onboard_button_bindings,
     read_onboard_button_bindings_on, read_onboard_profile, read_onboard_profile_on,
-    cycle_onboard_profile, cycle_onboard_profile_on,
+    set_onboard_host_mode_on,
 };
 pub use report_rate::{
     ReportRateCapabilities, ReportRateHz, ReportRateInfo, get_report_rate_info,

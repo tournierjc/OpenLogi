@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use gpui::{Context, Subscription};
 use openlogi_core::hid::{
-    DeviceRoute, DpiInfo, LightingInfo, ReportRateInfo, SmartShiftStatus, WriteError,
+    DeviceRoute, Dpi, DpiInfo, LightingInfo, ReportRateHz, ReportRateInfo, SmartShiftStatus,
+    WriteError,
 };
 use swr_core::{
     MaybeSend, MaybeSync, QueryOptions, QueryState, Retry, RetryPolicy, Runtime, SwrClient,
@@ -424,6 +425,53 @@ impl DeviceReads {
         if let Some(read) = self.smartshift.get_mut(key) {
             read.load = Load::Ready(value);
         }
+    }
+
+    /// Publish a DPI write optimistically into swr so a later snapshot re-read
+    /// does not clobber the editor with a stale cached device value.
+    pub(crate) fn set_dpi_ready(&mut self, key: &DeviceKey, dpi: Dpi) {
+        let Some(read) = self.dpi.get_mut(key) else {
+            return;
+        };
+        let Load::Ready(info) = &read.load else {
+            return;
+        };
+        if info.current == dpi {
+            return;
+        }
+        let value = Arc::new(DpiInfo {
+            current: dpi,
+            capabilities: info.capabilities.clone(),
+        });
+        if let Some(client) = &self.client {
+            client.set::<_, Cached<DpiInfo>, WriteError>(query_key(DPI, key), Some(value.clone()));
+        }
+        read.load = Load::Ready(value);
+    }
+
+    /// Publish a report-rate write optimistically into swr for the same reason
+    /// as [`Self::set_dpi_ready`].
+    pub(crate) fn set_report_rate_ready(&mut self, key: &DeviceKey, rate: ReportRateHz) {
+        let Some(read) = self.report_rate.get_mut(key) else {
+            return;
+        };
+        let Load::Ready(info) = &read.load else {
+            return;
+        };
+        if info.current == rate {
+            return;
+        }
+        let value = Arc::new(ReportRateInfo {
+            current: rate,
+            capabilities: info.capabilities.clone(),
+        });
+        if let Some(client) = &self.client {
+            client.set::<_, Cached<ReportRateInfo>, WriteError>(
+                query_key(REPORT_RATE, key),
+                Some(value.clone()),
+            );
+        }
+        read.load = Load::Ready(value);
     }
 
     /// Forget both feature queries for a device and fence their old flights.

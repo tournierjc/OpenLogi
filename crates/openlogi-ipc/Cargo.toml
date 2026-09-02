@@ -21,3 +21,9 @@ workspace = true
 
 [dev-dependencies]
 bincode = "1.3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[example]]
+name = "reset_app_profile"
+path = "examples/reset_app_profile.rs"
+required-features = []

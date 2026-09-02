@@ -130,6 +130,9 @@ pub enum Command {
         oneshot::Sender<Result<openlogi_core::hid::LightingInfo, WriteError>>,
     ),
     ReloadConfig,
+    /// Pin the hook's active application profile for a device, matching the GUI
+    /// profile selector's editing scope.
+    SetAppProfileOverride(String, Option<String>),
     /// Ask the agent to fire the macOS Accessibility prompt. The agent owns the
     /// CGEventTap, so the system dialog must name (and authorize) the *agent*
     /// binary, not the GUI — prompting locally would grant the wrong process.
@@ -608,6 +611,11 @@ async fn handle(
                     return Err(());
                 }
             }
+        }
+        Command::SetAppProfileOverride(device_key, profile) => {
+            let _ = client
+                .set_app_profile_override(ctx, device_key, profile)
+                .await;
         }
         Command::RequestAccessibilityPrompt => client
             .request_accessibility_prompt(ctx)

@@ -3,7 +3,7 @@
 use super::{
     AgentDevice, InventoryHealth, Orchestrator, VOLATILE_REAPPLY_CONFIRM_RETRIES,
     any_device_needs_capture_rearm, build_devices, configured_wheel_mode, host_switch_links,
-    pick_current, plan_reapply, reapply_targets, stable_id,
+    onboard_profile_needs_host_mode, pick_current, plan_reapply, reapply_targets, stable_id,
 };
 use openlogi_core::app::ForegroundApp;
 use openlogi_core::binding::{Action, Binding, ButtonId};
@@ -895,6 +895,79 @@ fn published_back_binding(orch: &Orchestrator) -> Option<Action> {
     })
 }
 
+fn published_hook_binding(orch: &Orchestrator, button: ButtonId) -> Option<Action> {
+    orch.shared
+        .hook_maps
+        .read()
+        .ok()
+        .and_then(|maps| maps.bindings.get(&button).map(Binding::click_action))
+}
+
+#[test]
+fn cycle_app_profile_republishes_g_series_hook_bindings() {
+    use openlogi_core::binding::KeyCombo;
+
+    let mut config = Config::default();
+    config.set_binding(
+        "mouse",
+        ButtonId::DpiUp,
+        Binding::Single(Action::Paste),
+    );
+    config.set_binding(
+        "mouse",
+        ButtonId::DpiDown,
+        Binding::Single(Action::Copy),
+    );
+    config.set_per_app_binding(
+        "mouse",
+        "Counter-Strike 2",
+        ButtonId::DpiUp,
+        Some(Action::CustomShortcut(
+            "KpMinus".parse::<KeyCombo>().expect("parse"),
+        )),
+    );
+    config.set_per_app_binding(
+        "mouse",
+        "Counter-Strike 2",
+        ButtonId::DpiDown,
+        Some(Action::CustomShortcut(
+            "KpPlus".parse::<KeyCombo>().expect("parse"),
+        )),
+    );
+    let mut orch = orchestrator(config);
+    orch.devices = vec![dev("mouse", 1, true)];
+    orch.rebuild();
+
+    assert_eq!(
+        published_hook_binding(&orch, ButtonId::DpiUp),
+        Some(Action::Paste)
+    );
+    assert_eq!(
+        published_hook_binding(&orch, ButtonId::DpiDown),
+        Some(Action::Copy)
+    );
+
+    assert!(orch.cycle_app_profile("mouse"));
+    assert_eq!(
+        published_hook_binding(&orch, ButtonId::DpiUp).map(|a| a.label()),
+        Some("KpMinus".to_string())
+    );
+    assert_eq!(
+        published_hook_binding(&orch, ButtonId::DpiDown).map(|a| a.label()),
+        Some("KpPlus".to_string())
+    );
+
+    assert!(orch.cycle_app_profile("mouse"));
+    assert_eq!(
+        published_hook_binding(&orch, ButtonId::DpiUp),
+        Some(Action::Paste)
+    );
+    assert_eq!(
+        published_hook_binding(&orch, ButtonId::DpiDown),
+        Some(Action::Copy)
+    );
+}
+
 #[test]
 fn app_switch_republishes_capture_plans() {
     // HID++ dispatch reads `plan.dispatch.bindings` at event time, so a
@@ -918,6 +991,27 @@ fn app_switch_republishes_capture_plans() {
     );
     orch.set_current_app(Some(ForegroundApp::unnamed("com.example.editor".into())));
     assert_eq!(published_back_binding(&orch), Some(Action::Undo));
+}
+
+#[test]
+fn onboard_host_mode_required_for_cycle_app_profile() {
+    let mut config = Config::default();
+    config.set_binding(
+        "mouse",
+        ButtonId::ProfileCycle,
+        Binding::Single(Action::CycleAppProfile),
+    );
+    assert!(onboard_profile_needs_host_mode(&config, "mouse"));
+}
+
+#[test]
+fn onboard_host_mode_required_for_per_app_button_overrides() {
+    let mut config = Config::default();
+    config.set_per_app_binding("mouse", "com.example.app", ButtonId::Back, Some(Action::Undo));
+    assert!(
+        !onboard_profile_needs_host_mode(&config, "mouse"),
+        "per-app overrides alone must stay in onboard mode"
+    );
 }
 
 #[test]
@@ -949,6 +1043,38 @@ fn cycle_app_profile_is_noop_without_saved_profiles() {
     orch.devices = vec![dev("a", 1, true)];
     orch.rebuild();
     assert!(!orch.cycle_app_profile("a"));
+}
+
+#[test]
+fn cycle_app_profile_survives_unchanged_foreground_poll() {
+    let mut config = Config::default();
+    config.set_per_app_binding("a", "com.example.editor", ButtonId::Back, Some(Action::Undo));
+    let mut orch = orchestrator(config);
+    orch.devices = vec![dev("a", 1, true)];
+    orch.rebuild();
+    assert!(orch.cycle_app_profile("a"));
+    assert_eq!(orch.effective_app_for("a"), Some("com.example.editor"));
+
+    // Same-app foreground samples must not wipe a manual cycle choice.
+    assert!(!orch.set_current_app(None));
+    assert_eq!(orch.effective_app_for("a"), Some("com.example.editor"));
+    assert_eq!(published_back_binding(&orch), Some(Action::Undo));
+}
+
+#[test]
+fn real_focus_change_clears_manual_app_profile_cycle() {
+    let mut config = Config::default();
+    config.set_per_app_binding("a", "com.example.editor", ButtonId::Back, Some(Action::Undo));
+    config.set_per_app_binding("a", "com.example.browser", ButtonId::Back, Some(Action::Redo));
+    let mut orch = orchestrator(config);
+    orch.devices = vec![dev("a", 1, true)];
+    orch.rebuild();
+    assert!(orch.cycle_app_profile("a"));
+    assert_eq!(orch.effective_app_for("a"), Some("com.example.browser"));
+
+    assert!(orch.set_current_app(Some(ForegroundApp::unnamed("com.example.editor".into()))));
+    assert_eq!(orch.effective_app_for("a"), Some("com.example.editor"));
+    assert_eq!(published_back_binding(&orch), Some(Action::Undo));
 }
 
 #[test]

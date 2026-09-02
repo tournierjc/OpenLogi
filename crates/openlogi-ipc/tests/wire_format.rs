@@ -102,7 +102,7 @@ fn representative_smartshift_status() -> SmartShiftStatus {
 /// that makes that visible in the same diff.
 #[test]
 fn protocol_version_is_pinned() {
-    assert_eq!(PROTOCOL_VERSION, 35);
+    assert_eq!(PROTOCOL_VERSION, 37);
 }
 
 #[test]
@@ -268,6 +268,13 @@ fn request_variant_order() {
         },
         "1f000846303044434146450101000101",
     );
+    assert_wire(
+        &AgentRequest::SetAppProfileOverride {
+            device_key: "unit:31384705".into(),
+            profile: Some("Counter-Strike 2".into()),
+        },
+        "200d756e69743a33313338343730350110436f756e7465722d537472696b652032",
+    );
 }
 
 /// The agent identity is frozen: a helper from any build has to be able to
@@ -384,15 +391,16 @@ fn agent_snapshot() {
         // Pinned on its own in `foreground_apps` below, like the inventory and
         // pairing fields.
         foreground: ForegroundApps::default(),
+        app_profile_overrides: BTreeMap::new(),
     };
-    assert_wire(&snapshot, "010001010705302e362e360100000000000000");
+    assert_wire(&snapshot, "010001010705302e362e36010000000000000000");
 
     // The observation is the snapshot with its generation in front.
     let observed = Observation {
         generation: 3,
         snapshot,
     };
-    assert_wire(&observed, "03010001010705302e362e360100000000000000");
+    assert_wire(&observed, "03010001010705302e362e36010000000000000000");
 }
 
 /// The foreground application rides the snapshot, so both halves are pinned:

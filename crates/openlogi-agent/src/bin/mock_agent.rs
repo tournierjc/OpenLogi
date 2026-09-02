@@ -779,6 +779,7 @@ fn snapshot_of(state: &State) -> AgentSnapshot {
         camera_active: state.camera_active(),
         pairing: state.phase.clone(),
         foreground: state.foreground(),
+        app_profile_overrides: BTreeMap::new(),
     }
 }
 
@@ -979,6 +980,16 @@ impl Agent for MockAgent {
     ) -> Result<(), WriteError> {
         info!(%route, ?resolution, ?inverted, "set_scroll_wheel_mode");
         Ok(())
+    }
+
+    async fn set_app_profile_override(
+        self,
+        _: Context,
+        device_key: String,
+        profile: Option<String>,
+    ) -> bool {
+        info!(%device_key, ?profile, "set_app_profile_override");
+        true
     }
 
     async fn request_accessibility_prompt(self, _: Context) {

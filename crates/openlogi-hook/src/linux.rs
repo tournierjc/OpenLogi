@@ -23,7 +23,7 @@
     reason = "the wake pipe and the Wayland toplevel listener call libc directly"
 )]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -40,7 +40,7 @@ use evdev::{
     AbsoluteAxisCode, AttributeSetRef, Device, EventSummary, KeyCode, PropType, RelativeAxisCode,
 };
 use thiserror::Error;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 use x11rb::connection::Connection as _;
 use x11rb::properties::WmClass;
 use x11rb::protocol::Event;
@@ -90,10 +90,20 @@ impl HookBackend for Backend {
             return Err(HookError::NoDeviceFound);
         }
 
+        let companions = find_companion_keyboards(&devices);
+        if !companions.is_empty() {
+            info!(
+                count = companions.len(),
+                "suppressing Logitech companion keyboard node(s)"
+            );
+        }
+
         let stop = Arc::new(AtomicBool::new(false));
         let cb: Arc<dyn Fn(HookEvent) -> EventDisposition + Send + Sync> = Arc::new(cb);
-        let mut threads: Vec<thread::JoinHandle<()>> = Vec::with_capacity(devices.len());
-        let mut stop_pipes: Vec<OwnedFd> = Vec::with_capacity(devices.len());
+        let mut threads: Vec<thread::JoinHandle<()>> =
+            Vec::with_capacity(devices.len() + companions.len());
+        let mut stop_pipes: Vec<OwnedFd> =
+            Vec::with_capacity(devices.len() + companions.len());
 
         let result = (|| -> io::Result<()> {
             for (path, device) in devices {
@@ -105,6 +115,17 @@ impl HookBackend for Backend {
                     .name(format!("openlogi-hook:{}", path.display()))
                     .spawn(move || {
                         device_thread(path, device, virtual_device, cb_clone, stop_clone, rx);
+                    })?;
+                threads.push(handle);
+                stop_pipes.push(tx);
+            }
+            for (path, device) in companions {
+                let (rx, tx) = create_pipe()?;
+                let stop_clone = Arc::clone(&stop);
+                let handle = thread::Builder::new()
+                    .name(format!("openlogi-hook-kbd:{}", path.display()))
+                    .spawn(move || {
+                        companion_keyboard_thread(path, device, stop_clone, rx);
                     })?;
                 threads.push(handle);
                 stop_pipes.push(tx);
@@ -239,6 +260,89 @@ fn find_mouse_devices() -> Vec<(std::path::PathBuf, Device)> {
         .collect()
 }
 
+/// G-series mice expose a second evdev node (e.g. "… Mouse G502 Keyboard") that
+/// emits the firmware HID keyboard reports for DPI and tilt buttons. In host
+/// mode the mouse node carries remappable `BTN_*` codes, but this companion node
+/// still passes native scancodes through — bypassing OpenLogi bindings and
+/// often winning over the injected shortcut. Grab and swallow it whenever its
+/// `uniq` matches a hooked mouse from the same physical device.
+fn find_companion_keyboards(
+    mice: &[(std::path::PathBuf, Device)],
+) -> Vec<(std::path::PathBuf, Device)> {
+    let uniqs: HashSet<&str> = mice
+        .iter()
+        .filter_map(|(_, device)| device.unique_name())
+        .collect();
+    if uniqs.is_empty() {
+        return Vec::new();
+    }
+    evdev::enumerate()
+        .filter(|(path, device)| {
+            if u32::from(device.input_id().vendor()) != LOGITECH_VENDOR_ID {
+                return false;
+            }
+            let Some(uniq) = device.unique_name() else {
+                return false;
+            };
+            if !uniqs.contains(uniq) {
+                return false;
+            }
+            let companion = !is_hookable_mouse(
+                device.name(),
+                device.supported_keys(),
+                device.supported_relative_axes(),
+                device.supported_absolute_axes(),
+                device.properties(),
+                LOGITECH_VENDOR_ID,
+            );
+            if companion {
+                debug!(
+                    "companion keyboard {} ({}) will be suppressed",
+                    path.display(),
+                    device.name().unwrap_or("unnamed"),
+                );
+            }
+            companion
+        })
+        .collect()
+}
+
+/// Exclusive grab on a companion keyboard node; events are discarded so only the
+/// hooked mouse path (and OpenLogi injection) can dispatch button actions.
+fn companion_keyboard_thread(
+    path: std::path::PathBuf,
+    mut device: Device,
+    stop: Arc<AtomicBool>,
+    stop_rx: OwnedFd,
+) {
+    if let Err(e) = device.grab() {
+        warn!(
+            "failed to grab companion keyboard {}: {e} — native HID may leak alongside remaps",
+            path.display()
+        );
+        return;
+    }
+
+    let device_fd = device.as_raw_fd();
+    let stop_fd = stop_rx.as_raw_fd();
+    info!(
+        device = %path.display(),
+        "companion keyboard grabbed — firmware HID reports suppressed"
+    );
+
+    while !stop.load(Ordering::Relaxed) {
+        if !wait_readable(device_fd, stop_fd) {
+            break;
+        }
+        if device.fetch_events().is_err() {
+            break;
+        }
+        // Swallow every report — remapping happens on the mouse evdev node.
+    }
+
+    debug!("companion keyboard hook stopped on {}", path.display());
+}
+
 /// Decide whether an input device is a physical mouse the hook may grab.
 ///
 /// Grabbing is only correct for devices whose full event stream the paired
@@ -292,19 +396,26 @@ fn is_hookable_mouse(
 }
 
 fn build_virtual_device(device: &Device) -> io::Result<evdev::uinput::VirtualDevice> {
-    let builder = VirtualDevice::builder()?.name(VIRTUAL_DEVICE_NAME);
+    let mut builder = VirtualDevice::builder()?
+        .name(VIRTUAL_DEVICE_NAME)
+        .input_id(device.input_id());
 
-    let builder = if let Some(keys) = device.supported_keys() {
-        builder.with_keys(keys)?
-    } else {
-        builder
-    };
+    if let Some(keys) = device.supported_keys() {
+        builder = builder.with_keys(keys)?;
+    }
 
-    let builder = if let Some(axes) = device.supported_relative_axes() {
-        builder.with_relative_axes(axes)?
-    } else {
-        builder
-    };
+    if let Some(axes) = device.supported_relative_axes() {
+        builder = builder.with_relative_axes(axes)?;
+    }
+
+    // Gaming mice (G502, etc.) emit EV_MSC alongside button reports; omitting
+    // MSC from the uinput clone breaks re-injection while the physical node
+    // is grabbed — movement can still work but clicks never reach the desktop.
+    if let Some(msc) = device.misc_properties() {
+        builder = builder.with_msc(msc)?;
+    }
+
+    builder = builder.with_properties(device.properties())?;
 
     builder.build()
 }
@@ -368,15 +479,26 @@ fn scroll(delta_x: f64, delta_y: f64) -> MouseEvent {
     }
 }
 
-fn translate(event: &evdev::InputEvent, hires_scroll: bool) -> Option<MouseEvent> {
+fn translate(
+    event: &evdev::InputEvent,
+    hires_scroll: bool,
+    g_series_host_buttons: bool,
+) -> Option<MouseEvent> {
     match event.destructure() {
         EventSummary::Key(_, key, value) => {
-            let id = key_to_button(key)?;
+            let id = key_to_button(key, g_series_host_buttons)?;
+            // Ignore EV_KEY repeats (value 2): a held G-series host-mode
+            // button must not spam CycleAppProfile / DPI actions.
+            let pressed = match value {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
             // Device is already Logitech-only (see `is_hookable_mouse`); the
             // agent runtime treats `device: None` as remappable on Linux.
             Some(MouseEvent::Button {
                 id,
-                pressed: value != 0,
+                pressed,
                 device: None,
             })
         }
@@ -419,18 +541,58 @@ fn translate(event: &evdev::InputEvent, hires_scroll: bool) -> Option<MouseEvent
     }
 }
 
-fn key_to_button(key: KeyCode) -> Option<ButtonId> {
+/// Evdev code `0x118` — Profile Cycle on wired G502 in host mode. Presence of
+/// this bit in `supported_keys` marks a G-series host-mode button layout.
+const G_SERIES_PROFILE_CYCLE_CODE: u16 = 0x118;
+
+/// Whether this mouse exposes G-series host-mode extras (Profile Cycle, etc.).
+/// Those devices use `BTN_BACK`/`BTN_FORWARD` for DPI+/DPI− (G7/G8), while
+/// thumb navigation stays on `BTN_SIDE`/`BTN_EXTRA`. On wired G502 host mode the
+/// lower “+” button is `BTN_BACK` and the upper “−” button is `BTN_FORWARD`.
+/// MX-class mice keep the older aliasing where BACK/SIDE both mean thumb Back.
+fn device_has_g_series_host_buttons(device: &Device) -> bool {
+    device
+        .supported_keys()
+        .is_some_and(|keys| keys.contains(KeyCode::new(G_SERIES_PROFILE_CYCLE_CODE)))
+}
+
+fn key_to_button(key: KeyCode, g_series_host_buttons: bool) -> Option<ButtonId> {
     match key {
         KeyCode::BTN_LEFT => Some(ButtonId::LeftClick),
         KeyCode::BTN_RIGHT => Some(ButtonId::RightClick),
         KeyCode::BTN_MIDDLE => Some(ButtonId::MiddleClick),
-        // BTN_BACK/BTN_SIDE both appear as the back thumb button across mice.
-        KeyCode::BTN_BACK | KeyCode::BTN_SIDE => Some(ButtonId::Back),
-        // BTN_FORWARD/BTN_EXTRA both appear as the forward thumb button.
-        KeyCode::BTN_FORWARD | KeyCode::BTN_EXTRA => Some(ButtonId::Forward),
-        // BTN_TASK is the closest generic match for a mode/DPI toggle button.
-        KeyCode::BTN_TASK => Some(ButtonId::DpiToggle),
-        _ => None,
+        KeyCode::BTN_SIDE => Some(ButtonId::Back),
+        KeyCode::BTN_EXTRA => Some(ButtonId::Forward),
+        // G502 host mode: lower DPI+ is BTN_BACK, upper DPI− is BTN_FORWARD. MX
+        // mice that lack Profile Cycle (0x118) still alias those codes to thumb
+        // Back/Forward.
+        KeyCode::BTN_BACK => Some(if g_series_host_buttons {
+            ButtonId::DpiUp
+        } else {
+            ButtonId::Back
+        }),
+        KeyCode::BTN_FORWARD => Some(if g_series_host_buttons {
+            ButtonId::DpiToggle
+        } else {
+            ButtonId::Forward
+        }),
+        // On wired G502 host mode the stacked DPI− button is BTN_TASK; the
+        // sniper/mode switch beside it is BTN_FORWARD (not the other way around).
+        KeyCode::BTN_TASK => Some(if g_series_host_buttons {
+            ButtonId::DpiDown
+        } else {
+            ButtonId::DpiToggle
+        }),
+        // G502 host-mode extras sit after BTN_TASK (0x117). The kernel has no
+        // names for 0x118..=0x11f; Profile Cycle (G9) is 0x118 on wired G502.
+        other => match other.code() {
+            G_SERIES_PROFILE_CYCLE_CODE => Some(ButtonId::ProfileCycle),
+            0x119 if g_series_host_buttons => Some(ButtonId::WheelTiltLeft),
+            0x11a if g_series_host_buttons => Some(ButtonId::WheelTiltRight),
+            0x119 => Some(ButtonId::DpiUp),
+            0x11a => Some(ButtonId::DpiDown),
+            _ => None,
+        },
     }
 }
 
@@ -460,13 +622,18 @@ fn device_thread(
     let hires_scroll = device
         .supported_relative_axes()
         .is_some_and(|axes| axes.contains(RelativeAxisCode::REL_WHEEL_HI_RES));
+    let g_series_host_buttons = device_has_g_series_host_buttons(&device);
 
     let device_fd = device.as_raw_fd();
     let stop_fd = stop_rx.as_raw_fd();
     // Events that will be re-injected at the next SYN_REPORT.
     let mut pending: Vec<evdev::InputEvent> = Vec::new();
 
-    debug!("hook started on {}", path.display());
+    debug!(
+        g_series_host_buttons,
+        "hook started on {}",
+        path.display()
+    );
 
     'read: loop {
         if stop.load(Ordering::Relaxed) {
@@ -505,7 +672,7 @@ fn device_thread(
                     pending.clear();
                 }
             } else {
-                let disposition = match translate(&event, hires_scroll) {
+                let disposition = match translate(&event, hires_scroll, g_series_host_buttons) {
                     Some(me) => cb(HookEvent::Mouse(me)),
                     // Low-res companions (REL_WHEEL/REL_HWHEEL) must be suppressed when hi-res
                     // is active — passing them through would double the scroll distance.
@@ -1530,7 +1697,7 @@ mod tests {
 
     #[test]
     fn key_to_button_maps_standard_mouse_buttons() {
-        let cases = [
+        let mx_cases = [
             (KeyCode::BTN_LEFT, ButtonId::LeftClick),
             (KeyCode::BTN_RIGHT, ButtonId::RightClick),
             (KeyCode::BTN_MIDDLE, ButtonId::MiddleClick),
@@ -1539,42 +1706,80 @@ mod tests {
             (KeyCode::BTN_FORWARD, ButtonId::Forward),
             (KeyCode::BTN_EXTRA, ButtonId::Forward),
             (KeyCode::BTN_TASK, ButtonId::DpiToggle),
+            (KeyCode::new(0x118), ButtonId::ProfileCycle),
+            (KeyCode::new(0x119), ButtonId::DpiUp),
+            (KeyCode::new(0x11a), ButtonId::DpiDown),
         ];
-        for (key, expected) in cases {
+        for (key, expected) in mx_cases {
             assert_eq!(
-                key_to_button(key),
+                key_to_button(key, false),
                 Some(expected),
-                "key_to_button({key:?}) should be {expected:?}"
+                "MX key_to_button({key:?}) should be {expected:?}"
             );
         }
     }
 
     #[test]
+    fn g_series_maps_host_mode_buttons() {
+        assert_eq!(
+            key_to_button(KeyCode::BTN_BACK, true),
+            Some(ButtonId::DpiUp)
+        );
+        assert_eq!(
+            key_to_button(KeyCode::BTN_FORWARD, true),
+            Some(ButtonId::DpiToggle)
+        );
+        assert_eq!(
+            key_to_button(KeyCode::BTN_TASK, true),
+            Some(ButtonId::DpiDown)
+        );
+        assert_eq!(key_to_button(KeyCode::BTN_SIDE, true), Some(ButtonId::Back));
+        assert_eq!(
+            key_to_button(KeyCode::BTN_EXTRA, true),
+            Some(ButtonId::Forward)
+        );
+        assert_eq!(
+            key_to_button(KeyCode::new(0x118), true),
+            Some(ButtonId::ProfileCycle)
+        );
+        assert_eq!(
+            key_to_button(KeyCode::new(0x119), true),
+            Some(ButtonId::WheelTiltLeft)
+        );
+        assert_eq!(
+            key_to_button(KeyCode::new(0x11a), true),
+            Some(ButtonId::WheelTiltRight)
+        );
+    }
+
+    #[test]
+    fn key_to_button_returns_none_for_unmapped_extra_buttons() {
+        assert_eq!(key_to_button(KeyCode::BTN_0, false), None);
+        assert_eq!(key_to_button(KeyCode::new(0x11b), false), None);
+    }
+
+    #[test]
     fn key_to_button_returns_none_for_non_mouse_keys() {
-        assert_eq!(key_to_button(KeyCode::KEY_A), None);
-        assert_eq!(key_to_button(KeyCode::KEY_LEFTSHIFT), None);
+        assert_eq!(key_to_button(KeyCode::KEY_A, false), None);
+        assert_eq!(key_to_button(KeyCode::KEY_LEFTSHIFT, false), None);
     }
 
     // ── translate ────────────────────────────────────────────────────────────
 
     #[test]
-    fn translate_btn_left_down_returns_button_pressed() {
-        let event = InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 1);
+    fn translate_primary_clicks_reach_hook_dispatch() {
+        let down = InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 1);
+        let up = InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 0);
         assert_matches!(
-            translate(&event, false),
+            translate(&down, false, false),
             Some(MouseEvent::Button {
                 id: ButtonId::LeftClick,
                 pressed: true,
                 device: None,
             })
         );
-    }
-
-    #[test]
-    fn translate_btn_left_up_returns_button_released() {
-        let event = InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 0);
         assert_matches!(
-            translate(&event, false),
+            translate(&up, false, false),
             Some(MouseEvent::Button {
                 id: ButtonId::LeftClick,
                 pressed: false,
@@ -1587,7 +1792,7 @@ mod tests {
     fn translate_btn_back_returns_back() {
         let event = InputEvent::new(EventType::KEY.0, KeyCode::BTN_BACK.0, 1);
         assert_matches!(
-            translate(&event, false),
+            translate(&event, false, false),
             Some(MouseEvent::Button {
                 id: ButtonId::Back,
                 pressed: true,
@@ -1600,7 +1805,7 @@ mod tests {
     fn translate_btn_side_returns_back() {
         let event = InputEvent::new(EventType::KEY.0, KeyCode::BTN_SIDE.0, 1);
         assert_matches!(
-            translate(&event, false),
+            translate(&event, false, false),
             Some(MouseEvent::Button {
                 id: ButtonId::Back,
                 pressed: true,
@@ -1613,7 +1818,7 @@ mod tests {
     fn translate_btn_forward_returns_forward() {
         let event = InputEvent::new(EventType::KEY.0, KeyCode::BTN_FORWARD.0, 1);
         assert_matches!(
-            translate(&event, false),
+            translate(&event, false, false),
             Some(MouseEvent::Button {
                 id: ButtonId::Forward,
                 pressed: true,
@@ -1628,7 +1833,7 @@ mod tests {
     fn translate_rel_x_returns_horizontal_move() {
         let event = InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_X.0, 7);
         assert_matches!(
-            translate(&event, false),
+            translate(&event, false, false),
             Some(MouseEvent::Moved {
                 delta_x: 7,
                 delta_y: 0
@@ -1640,7 +1845,7 @@ mod tests {
     fn translate_rel_y_returns_vertical_move() {
         let event = InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_Y.0, -4);
         assert_matches!(
-            translate(&event, false),
+            translate(&event, false, false),
             Some(MouseEvent::Moved {
                 delta_x: 0,
                 delta_y: -4
@@ -1653,7 +1858,7 @@ mod tests {
     #[test]
     fn translate_rel_wheel_returns_scroll_y() {
         let event = InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_WHEEL.0, 3);
-        let result = translate(&event, false);
+        let result = translate(&event, false, false);
         assert!(
             matches!(result, Some(MouseEvent::Scroll { delta, .. })
                 if delta == crate::ScrollDelta::wheel_ticks(0.0, 3.0)),
@@ -1664,7 +1869,7 @@ mod tests {
     #[test]
     fn translate_rel_hwheel_returns_scroll_x() {
         let event = InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_HWHEEL.0, -2);
-        let result = translate(&event, false);
+        let result = translate(&event, false, false);
         assert!(
             matches!(result, Some(MouseEvent::Scroll { delta, .. })
                 if delta == crate::ScrollDelta::wheel_ticks(-2.0, 0.0)),
@@ -1682,7 +1887,7 @@ mod tests {
             RelativeAxisCode::REL_WHEEL_HI_RES.0,
             60,
         );
-        let result = translate(&event, true);
+        let result = translate(&event, true, false);
         assert!(
             matches!(result, Some(MouseEvent::Scroll { delta, .. })
                 if delta == crate::ScrollDelta::wheel_ticks(0.0, 0.5)),
@@ -1697,7 +1902,7 @@ mod tests {
             RelativeAxisCode::REL_HWHEEL_HI_RES.0,
             -120,
         );
-        let result = translate(&event, true);
+        let result = translate(&event, true, false);
         assert!(
             matches!(result, Some(MouseEvent::Scroll { delta, .. })
                 if delta == crate::ScrollDelta::wheel_ticks(-1.0, 0.0)),
@@ -1708,25 +1913,25 @@ mod tests {
     #[test]
     fn translate_low_res_wheel_skipped_when_hires_active() {
         let event = InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_WHEEL.0, 1);
-        assert!(translate(&event, true).is_none());
+        assert!(translate(&event, true, false).is_none());
     }
 
     #[test]
     fn translate_low_res_hwheel_skipped_when_hires_active() {
         let event = InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_HWHEEL.0, 1);
-        assert!(translate(&event, true).is_none());
+        assert!(translate(&event, true, false).is_none());
     }
 
     #[test]
     fn translate_non_mouse_key_returns_none() {
         let event = InputEvent::new(EventType::KEY.0, KeyCode::KEY_A.0, 1);
-        assert!(translate(&event, false).is_none());
+        assert!(translate(&event, false, false).is_none());
     }
 
     #[test]
     fn translate_sync_event_returns_none() {
         let event = InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0);
-        assert!(translate(&event, false).is_none());
+        assert!(translate(&event, false, false).is_none());
     }
 
     // ── is_hookable_mouse ────────────────────────────────────────────────────

@@ -270,6 +270,14 @@ impl KeyCombo {
         parts.push(self.key.label());
         parts.join("+")
     }
+
+    /// USB HID usage to synthesize on this host. Config shortcuts are authored
+    /// against US physical positions; on AZERTY layouts the same usage types
+    /// the wrong glyph (`A` → `q`), so Linux injection remaps letter keys.
+    #[must_use]
+    pub fn inject_key_usage(&self) -> KeyboardUsage {
+        KeyboardUsage::try_from(inject_usage_for_host_layout(self.key.code())).unwrap_or(self.key)
+    }
 }
 
 /// One key-down from the settings app's shortcut recorder.
@@ -553,9 +561,97 @@ fn is_belgian_layout(name: &str) -> bool {
     lower.contains("belgian") || lower.contains("belge") || lower == "be"
 }
 
+/// Whether the active host keyboard layout is French AZERTY (or Belgian AZERTY
+/// for letter keys that share the same positions).
+#[must_use]
+pub fn host_uses_french_azerty() -> bool {
+    if std::env::var("XKB_DEFAULT_VARIANT")
+        .is_ok_and(|variant| variant.to_ascii_lowercase().contains("azerty"))
+    {
+        return true;
+    }
+    if std::env::var("XKB_DEFAULT_LAYOUT").is_ok_and(|layout| {
+        let layout = layout.to_ascii_lowercase();
+        layout == "fr" || layout.starts_with("fr,")
+    }) {
+        return true;
+    }
+    std::env::var("LC_ALL")
+        .or_else(|_| std::env::var("LANG"))
+        .is_ok_and(|lang| {
+            let lang = lang.to_ascii_lowercase();
+            lang.starts_with("fr_") || lang.starts_with("fr-")
+        })
+}
+
+/// Map a US-position letter HID usage to the usage that types the same letter
+/// on French AZERTY. Non-letters pass through unchanged.
+#[must_use]
+pub fn inject_usage_for_host_layout(usage: u8) -> u8 {
+    if !host_uses_french_azerty() {
+        return usage;
+    }
+    let Some(letter) = us_hid_letter_usage_to_char(usage) else {
+        return usage;
+    };
+    french_azerty_char_to_hid_usage(letter).unwrap_or(usage)
+}
+
+fn us_hid_letter_usage_to_char(usage: u8) -> Option<char> {
+    if (0x04..=0x1d).contains(&usage) {
+        Some(char::from(b'a' + (usage - 0x04)))
+    } else {
+        None
+    }
+}
+
+fn french_azerty_char_to_hid_usage(letter: char) -> Option<u8> {
+    match letter {
+        'a' => Some(0x14),
+        'b' => Some(0x05),
+        'c' => Some(0x06),
+        'd' => Some(0x07),
+        'e' => Some(0x08),
+        'f' => Some(0x09),
+        'g' => Some(0x0a),
+        'h' => Some(0x0b),
+        'i' => Some(0x0c),
+        'j' => Some(0x0d),
+        'k' => Some(0x0e),
+        'l' => Some(0x0f),
+        'm' => Some(0x33),
+        'n' => Some(0x11),
+        'o' => Some(0x12),
+        'p' => Some(0x13),
+        'q' => Some(0x04),
+        'r' => Some(0x15),
+        's' => Some(0x16),
+        't' => Some(0x17),
+        'u' => Some(0x18),
+        'v' => Some(0x19),
+        'w' => Some(0x1d),
+        'x' => Some(0x1b),
+        'y' => Some(0x1c),
+        'z' => Some(0x1a),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn azerty_letter_usages_map_to_matching_physical_keys() {
+        assert_eq!(french_azerty_char_to_hid_usage('a'), Some(0x14));
+        assert_eq!(us_hid_letter_usage_to_char(0x04), Some('a'));
+        assert_eq!(
+            french_azerty_char_to_hid_usage(us_hid_letter_usage_to_char(0x04).unwrap()),
+            Some(0x14)
+        );
+        let combo = "A".parse::<KeyCombo>().expect("valid shortcut failed");
+        assert_eq!(combo.key().code(), 0x04);
+    }
 
     #[test]
     fn parses_modifiers_letters_and_navigation_keys() {

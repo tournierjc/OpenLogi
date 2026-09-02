@@ -13,7 +13,7 @@ use crate::features::mouse::thumbwheel::{ThumbwheelPair, ThumbwheelPreset};
 use crate::features::profiles::friendly_app_name;
 use crate::state::devices::DeviceRecord;
 
-use super::{AppState, StateEvent};
+use super::{AppState, DeviceKey, StateEvent};
 
 /// The per-app profile the binding panels are editing, and the device it was
 /// chosen for. Pairing them prevents a scope opened for one mouse from
@@ -162,66 +162,106 @@ impl AppState {
             .and_then(DeviceRecord::persistent_config_key)
             .map(str::to_string);
         self.bindings
-            .set_editing_app(&self.config, key.as_deref(), app);
-        self.apply_editing_profile_volatile_settings();
+            .set_editing_app(&self.config, key.as_deref(), app.clone());
+        self.seat_editing_profile_editor_state();
+        self.push_editing_profile_volatile_settings();
+        if let Some(device_key) = key {
+            self.send_ipc(crate::services::ipc::Command::SetAppProfileOverride(
+                device_key,
+                app,
+            ));
+        }
     }
 
-    /// Re-seat pointer/lighting editor values and push them to the device for
-    /// the profile scope the binding panels are editing. Profile tabs are a
-    /// preview of that scope's saved settings, not the live foreground app.
-    fn apply_editing_profile_volatile_settings(&mut self) {
-        let snapshot = {
-            let Some(record) = self.current_record() else {
-                return;
-            };
-            let Some(persistent_key) = record.persistent_config_key() else {
-                return;
-            };
-            let Some(device) = self.config.devices.get(persistent_key) else {
-                return;
-            };
-            let editing_app = self.editing_app();
-            let route_key = record.route_key.as_str();
-            let device_key = record.device_key();
-            (
-                device_key,
-                record.route.clone(),
-                device
-                    .effective_dpi_for_app(route_key, editing_app)
-                    .map(|dpi| self.normalize_active_dpi(dpi))
-                    .unwrap_or_else(|| self.dpi_for_current()),
-                device
-                    .effective_report_rate_for_app(route_key, editing_app)
-                    .map(|rate| self.normalize_active_report_rate(rate))
-                    .unwrap_or_else(|| self.report_rate_for_current()),
-                device
-                    .effective_smartshift_for_app(route_key, editing_app)
-                    .map(SmartShiftStatus::from)
-                    .or_else(|| self.current_smartshift_ready()),
-                device
-                    .effective_lighting_for_app(route_key, editing_app)
-                    .cloned(),
-                self.configured_wheel_mode_for_editing(),
-            )
+    /// Mirror the agent's active profile scope into the open editor without
+    /// pushing settings back to the agent.
+    pub(crate) fn sync_editing_app_from_agent(&mut self) -> Option<DeviceKey> {
+        let (config_key, device_key, app) = {
+            let record = self.current_record()?;
+            let config_key = record.persistent_config_key()?.to_string();
+            let app = self.profile_scope_from_agent(&config_key);
+            (config_key, record.device_key(), app)
         };
+        if self.editing_app().map(str::to_string) == app {
+            return None;
+        }
+        self.bindings
+            .set_editing_app(&self.config, Some(&config_key), app);
+        self.seat_editing_profile_editor_state();
+        Some(device_key)
+    }
 
-        let (
+    fn editing_profile_snapshot(
+        &self,
+    ) -> Option<(
+        DeviceKey,
+        openlogi_core::hid::DeviceRoute,
+        Dpi,
+        openlogi_core::hid::ReportRateHz,
+        Option<SmartShiftStatus>,
+        Option<openlogi_core::config::Lighting>,
+        (Option<openlogi_core::config::ScrollResolution>, Option<bool>),
+    )> {
+        let record = self.current_record()?;
+        let persistent_key = record.persistent_config_key()?;
+        let device = self.config.devices.get(persistent_key)?;
+        let editing_app = self.editing_app();
+        let route_key = record.route_key.as_str();
+        let device_key = record.device_key();
+        let route = record.route.clone()?;
+        Some((
             device_key,
+            route,
+            device
+                .effective_dpi_for_app(route_key, editing_app)
+                .map(|dpi| self.normalize_active_dpi(dpi))
+                .unwrap_or_else(|| self.dpi_for_current()),
+            device
+                .effective_report_rate_for_app(route_key, editing_app)
+                .map(|rate| self.normalize_active_report_rate(rate))
+                .unwrap_or_else(|| self.report_rate_for_current()),
+            device
+                .effective_smartshift_for_app(route_key, editing_app)
+                .map(SmartShiftStatus::from)
+                .or_else(|| self.current_smartshift_ready()),
+            device
+                .effective_lighting_for_app(route_key, editing_app)
+                .cloned(),
+            self.configured_wheel_mode_for_editing(),
+        ))
+    }
+
+    fn seat_editing_profile_editor_state(&mut self) {
+        let Some((
+            device_key,
+            _route,
+            dpi,
+            rate,
+            smartshift,
+            _lighting,
+            _wheel_mode,
+        )) = self.editing_profile_snapshot()
+        else {
+            return;
+        };
+        self.pointer.dpi = dpi;
+        self.pointer.report_rate = rate;
+        if let Some(status) = smartshift {
+            self.pointer.reads.set_smartshift_ready(&device_key, status);
+        }
+    }
+
+    fn push_editing_profile_volatile_settings(&mut self) {
+        let Some((
+            _device_key,
             route,
             dpi,
             rate,
             smartshift,
             lighting,
             (scroll_resolution, invert_scroll),
-        ) = snapshot;
-
-        self.pointer.dpi = dpi;
-        self.pointer.report_rate = rate;
-        if let Some(status) = smartshift {
-            self.pointer.reads.set_smartshift_ready(&device_key, status);
-        }
-
-        let Some(route) = route else {
+        )) = self.editing_profile_snapshot()
+        else {
             return;
         };
         self.send_ipc(crate::services::ipc::Command::SetDpi(route.clone(), dpi));

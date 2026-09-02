@@ -72,7 +72,11 @@ pub use succession::Identity;
 /// v34: [`Capabilities::report_rate`] appended; [`Agent::read_report_rate`] and
 ///      [`Agent::set_report_rate`] appended for HID++ `0x8060`/`0x8061`.
 /// v35: [`Agent::set_scroll_wheel_mode`] appended for native HiResWheel preview.
-pub const PROTOCOL_VERSION: u32 = 35;
+/// v36: [`Agent::set_app_profile_override`] appended so the GUI can preview a
+///      saved per-app profile's hook bindings without cycling on the device.
+/// v37: [`AgentSnapshot::app_profile_overrides`] appended so the GUI tracks
+///      manual Cycle App Profile choices made on the device.
+pub const PROTOCOL_VERSION: u32 = 37;
 
 /// Environment variable through which the agent hands a supervised helper the
 /// run token it will serve, so the helper knows which agent it belongs to
@@ -149,6 +153,10 @@ pub struct AgentSnapshot {
     /// Which application per-app profiles are resolving against. See
     /// [`ForegroundApps`].
     pub foreground: ForegroundApps,
+    /// Manual profile overrides keyed by persistent device config key. A key
+    /// maps to `None` when the Default (global) profile was chosen explicitly;
+    /// absent keys follow [`ForegroundApps`].
+    pub app_profile_overrides: BTreeMap<String, Option<String>>,
 }
 
 /// The application the agent currently resolves per-app profiles against, and
@@ -593,4 +601,9 @@ pub trait Agent {
         resolution: Option<ScrollResolution>,
         inverted: Option<bool>,
     ) -> Result<(), WriteError>;
+    /// Pin the active application profile for `device_key` until the
+    /// foreground app changes or the GUI clears the override with `None`.
+    /// Mirrors the manual [`Action::CycleAppProfile`] choice without requiring
+    /// the device button.
+    async fn set_app_profile_override(device_key: String, profile: Option<String>) -> bool;
 }

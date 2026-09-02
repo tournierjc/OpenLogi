@@ -6,6 +6,7 @@ use openlogi_core::hid::{ReportRateCapabilities, ReportRateHz};
 use tracing::debug;
 
 use super::device_key::DeviceKey;
+use super::devices::DeviceRecord;
 use super::load::ReportRateStatus;
 use super::{AppState, StateEvent};
 
@@ -108,6 +109,9 @@ impl AppState {
         }
         if let Some(route) = route {
             self.send_ipc(crate::services::ipc::Command::SetReportRate(route, rate));
+        }
+        if let Some(key) = self.current_record().map(DeviceRecord::device_key) {
+            self.pointer.reads.set_report_rate_ready(&key, rate);
         }
     }
 

@@ -107,7 +107,7 @@ fn parse_shortcut(text: &str) -> KeyCombo {
 /// Press an already-resolved chord: a table lookup from [`combo`] or a
 /// user-recorded [`Action::CustomShortcut`]/`WorkflowStep::PressKey`.
 fn press_combo(combo: &KeyCombo) {
-    let Some(key) = hid_usage_to_linux(combo.key().code()) else {
+    let Some(key) = hid_usage_to_linux(combo.inject_key_usage().code()) else {
         tracing::warn!(
             usage = combo.key().code(),
             "shortcut usage has no Linux mapping — press ignored"
@@ -209,7 +209,7 @@ fn run_workflow(steps: &[WorkflowStep]) {
                 );
             }
             WorkflowStep::PressKey(combo) => {
-                let Some(key) = hid_usage_to_linux(combo.key().code()) else {
+                let Some(key) = hid_usage_to_linux(combo.inject_key_usage().code()) else {
                     tracing::warn!(
                         usage = combo.key().code(),
                         "workflow PressKey usage has no Linux mapping; step ignored"
@@ -268,6 +268,12 @@ const KEY_CAPABILITIES: &[KeyCode] = &[
     KeyCode::KEY_HOME,  KeyCode::KEY_END,   KeyCode::KEY_PAGEUP,   KeyCode::KEY_PAGEDOWN,
     KeyCode::KEY_TAB,   KeyCode::KEY_ENTER, KeyCode::KEY_BACKSPACE, KeyCode::KEY_DELETE,
     KeyCode::KEY_ESC,   KeyCode::KEY_SPACE,
+    // Keypad (G-series per-app bindings often use KpPlus/KpMinus)
+    KeyCode::KEY_KP1,   KeyCode::KEY_KP2,   KeyCode::KEY_KP3,   KeyCode::KEY_KP4,
+    KeyCode::KEY_KP5,   KeyCode::KEY_KP6,   KeyCode::KEY_KP7,   KeyCode::KEY_KP8,
+    KeyCode::KEY_KP9,   KeyCode::KEY_KP0,   KeyCode::KEY_KPDOT, KeyCode::KEY_KPENTER,
+    KeyCode::KEY_KPSLASH, KeyCode::KEY_KPASTERISK, KeyCode::KEY_KPMINUS, KeyCode::KEY_KPPLUS,
+    KeyCode::KEY_KPEQUAL,
     // Modifiers (KEY_LEFTMETA used by the LockScreen Super+L fallback)
     KeyCode::KEY_LEFTCTRL, KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_LEFTALT, KeyCode::KEY_LEFTMETA,
     // Function keys
@@ -479,10 +485,11 @@ fn held_keycode(key: HeldKey) -> Option<KeyCode> {
         HeldKey::Shift => Some(KeyCode::KEY_LEFTSHIFT),
         HeldKey::Alt => Some(KeyCode::KEY_LEFTALT),
         HeldKey::Key(usage) => {
-            let key = hid_usage_to_linux(usage.code());
+            let usage = openlogi_core::binding::inject_usage_for_host_layout(usage.code());
+            let key = hid_usage_to_linux(usage);
             if key.is_none() {
                 tracing::warn!(
-                    usage = usage.code(),
+                    usage,
                     "held shortcut usage has no Linux mapping — edge ignored"
                 );
             }
@@ -800,6 +807,14 @@ mod tests {
         assert_eq!(hid_usage_to_linux(0x49), Some(KeyCode::KEY_INSERT));
         assert_eq!(hid_usage_to_linux(0x56), Some(KeyCode::KEY_KPMINUS));
         assert_eq!(hid_usage_to_linux(0xff), None);
+    }
+
+    #[test]
+    fn keypad_keys_are_advertised_on_the_uinput_device() {
+        use super::KEY_CAPABILITIES;
+
+        assert!(KEY_CAPABILITIES.contains(&KeyCode::KEY_KPPLUS));
+        assert!(KEY_CAPABILITIES.contains(&KeyCode::KEY_KPMINUS));
     }
 
     /// Pin a handful of representative `Shortcut -> KeyCombo` rows so an

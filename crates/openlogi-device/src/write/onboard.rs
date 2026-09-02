@@ -341,13 +341,7 @@ async fn apply_onboard_button_bindings_on_channel(
         });
     }
 
-    let mode = feature.get_onboard_mode().await.map_err(classify)?;
-    if mode != OnboardMode::Onboard {
-        feature
-            .set_onboard_mode(OnboardMode::Onboard)
-            .await
-            .map_err(classify)?;
-    }
+    ensure_onboard_mode(channel, index, OnboardMode::Onboard).await?;
 
     let directory = feature
         .read_sector(
@@ -433,8 +427,54 @@ fn g_series_button(slot: u8) -> Option<ButtonId> {
     }
 }
 
+/// Whether `action` can be stored in a G-series onboard profile sector.
+///
+/// OpenLogi-specific and OS-native actions fall back to [`native_binding`] on
+/// write today; callers that need the hook to dispatch them must keep the
+/// device in [`OnboardMode::Host`].
+#[must_use]
+pub fn is_onboard_encodable(action: &Action) -> bool {
+    encode_action(action).is_some()
+}
+
 fn encode_onboard_binding(button: ButtonId, action: &Action) -> ButtonBinding {
-    encode_action(action).unwrap_or_else(|| native_binding(button))
+    encode_action(action).unwrap_or_else(|| {
+        if !matches!(action, Action::None) {
+            warn!(
+                ?button,
+                action = %action.label(),
+                "onboard profile cannot represent action — using the slot's native binding"
+            );
+        }
+        native_binding(button)
+    })
+}
+
+/// Hand button remapping to the host hook instead of onboard flash execution.
+pub async fn set_onboard_host_mode_on(shared: &SharedChannel) -> Result<(), WriteError> {
+    ensure_onboard_mode(
+        shared.channel(),
+        shared.device_index(),
+        OnboardMode::Host,
+    )
+    .await
+}
+
+async fn ensure_onboard_mode(
+    channel: &Arc<hidpp::channel::HidppChannel>,
+    index: u8,
+    mode: OnboardMode,
+) -> Result<(), WriteError> {
+    let mut device = Device::new(Arc::clone(channel), index)
+        .await
+        .map_err(|_| WriteError::DeviceUnreachable { index })?;
+    let feature = open_feature::<OnboardProfilesFeature>(&mut device).await?;
+    if feature.get_onboard_mode().await.map_err(classify)? == mode {
+        return Ok(());
+    }
+    feature.set_onboard_mode(mode).await.map_err(classify)?;
+    debug!(?mode, index, "onboard execution mode switched");
+    Ok(())
 }
 
 /// Map the active onboard profile's decoded slots to OpenLogi actions.
@@ -595,7 +635,7 @@ fn route_product_id(route: &DeviceRoute) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_action, encode_action, g_series_slot, native_binding};
+    use super::{decode_action, encode_action, g_series_slot, is_onboard_encodable, native_binding};
     use hidpp::feature::onboard_profiles::{ButtonBinding, special};
     use openlogi_core::binding::{Action, ButtonId, KeyCombo};
 
@@ -684,8 +724,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn onboard_fixed_led_decodes_color() {
+#[test]
+fn cycle_app_profile_is_not_onboard_encodable() {
+    use openlogi_core::binding::Action;
+
+    assert!(!is_onboard_encodable(&Action::CycleAppProfile));
+    assert!(is_onboard_encodable(&Action::CycleOnboardProfile));
+}
+
+#[test]
+fn onboard_fixed_led_decodes_color() {
         let mut bytes = [0u8; 11];
         bytes[0] = 0x01;
         bytes[1] = 0x12;

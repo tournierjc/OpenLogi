@@ -14,6 +14,8 @@
 //! for the device and config facts, the agent binary for the hook ones — so it
 //! is shared as an `Arc` and every setter takes `&self`.
 
+use std::collections::{BTreeMap, HashMap};
+
 use openlogi_core::app::ForegroundApp;
 use openlogi_core::brand::is_openlogi_foreground_id;
 use openlogi_core::device::{DeviceInventory, StandaloneDevice};
@@ -60,6 +62,7 @@ impl ObservableState {
                 camera_active: false,
                 pairing: None,
                 foreground: ForegroundApps::default(),
+                app_profile_overrides: BTreeMap::new(),
             },
         });
         Self { tx }
@@ -225,6 +228,22 @@ impl ObservableState {
             }
             snapshot.pairing = Some(PairingPhase::Found(found));
             !known
+        });
+    }
+
+    /// Publish manual application-profile overrides so the GUI can mirror a
+    /// Cycle App Profile press without guessing from hook bindings alone.
+    pub fn set_app_profile_overrides(&self, overrides: &HashMap<String, Option<String>>) {
+        let published: BTreeMap<String, Option<String>> = overrides
+            .iter()
+            .map(|(key, profile)| (key.clone(), profile.clone()))
+            .collect();
+        self.update(|snapshot| {
+            if snapshot.app_profile_overrides == published {
+                return false;
+            }
+            snapshot.app_profile_overrides = published;
+            true
         });
     }
 

@@ -37,3 +37,10 @@ KERNEL=="uinput", TAG+="uaccess", OPTIONS+="static_node=uinput"
 # two matchers cover the same two transports as the hidraw block above.
 SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", ATTRS{idVendor}=="046d", TAG+="uaccess"
 SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", KERNELS=="*:046D:*", TAG+="uaccess"
+
+# G-series mice also expose a companion evdev keyboard node ("… Mouse … Keyboard")
+# for DPI/tilt HID reports. In host mode the hook remaps on the mouse node, but
+# without access to this node the firmware scancodes still reach the desktop and
+# override injected shortcuts. Tag Logitech keyboard-classified event nodes too.
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEY}=="1", ATTRS{idVendor}=="046d", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEY}=="1", KERNELS=="*:046D:*", TAG+="uaccess"
